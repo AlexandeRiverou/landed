@@ -1,6 +1,16 @@
 import * as assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { generateForest, generateRockField, terrainHeight, waterCoverage } from './world'
+import {
+  generateFlyingThings,
+  generateCannons,
+  generateForest,
+  generateRockField,
+  highestTerrainAlongPath,
+  terrainGridOrigin,
+  terrainHeight,
+  terrainNormalAt,
+  waterCoverage,
+} from './world'
 
 describe('terrainHeight', () => {
   it('is deterministic for the same world position', () => {
@@ -11,7 +21,7 @@ describe('terrainHeight', () => {
     const heights = Array.from({ length: 40 }, (_, index) => terrainHeight(index * 180, index * -97))
     assert.ok(heights.every(Number.isFinite))
     assert.ok(Math.min(...heights) >= 35)
-    assert.ok(Math.max(...heights) <= 1080)
+    assert.ok(Math.max(...heights) <= 1600)
     assert.ok(Math.max(...heights) - Math.min(...heights) > 30)
   })
 
@@ -21,6 +31,28 @@ describe('terrainHeight', () => {
       for (let z = -6000; z <= 6000; z += 350) highestPoint = Math.max(highestPoint, terrainHeight(x, z))
     }
     assert.ok(highestPoint > 600)
+  })
+
+  it('finds the highest mountain across a swept flight path', () => {
+    const start = terrainHeight(-5000, 0)
+    const end = terrainHeight(5000, 0)
+    const pathPeak = highestTerrainAlongPath(-5000, 0, 5000, 0)
+    assert.ok(pathPeak >= start)
+    assert.ok(pathPeak >= end)
+  })
+
+  it('keeps terrain vertices on fixed world-space grid coordinates', () => {
+    const spacing = 12000 / 190
+    assert.equal(terrainGridOrigin(10), 0)
+    assert.equal(terrainGridOrigin(30), 0)
+    assert.equal(terrainGridOrigin(45), spacing)
+    assert.equal(terrainGridOrigin(90), terrainGridOrigin(45))
+  })
+
+  it('returns normalized surface directions for slope-aligned assets', () => {
+    const normal = terrainNormalAt(-1800, 920)
+    assert.ok(Math.abs(Math.hypot(normal.x, normal.y, normal.z) - 1) < 1e-9)
+    assert.ok(normal.y > 0)
   })
 
   it('cuts a river and places lakes across the open world', () => {
@@ -52,5 +84,21 @@ describe('terrainHeight', () => {
     assert.deepEqual(rocks, generateRockField(0, 0, 320))
     assert.ok(rocks.length > 8)
     assert.ok(rocks.every((rock) => rock.height >= 520 && waterCoverage(rock.x, rock.z) <= 0.05))
+  })
+
+  it('places repeatable cannons on dry high ground', () => {
+    const cannons = generateCannons(0, 0, 12)
+    assert.deepEqual(cannons, generateCannons(0, 0, 12))
+    assert.ok(cannons.length > 0)
+    assert.ok(cannons.every((cannon) => cannon.height >= 780 && waterCoverage(cannon.x, cannon.z) <= 0.05))
+  })
+
+  it('spawns deterministic flying traffic clear of terrain', () => {
+    const traffic = generateFlyingThings(0, 0, 12)
+    assert.deepEqual(traffic, generateFlyingThings(0, 0, 12))
+    assert.ok(traffic.some((thing) => thing.kind === 'birds'))
+    assert.ok(traffic.some((thing) => thing.kind === 'airplane'))
+    assert.ok(traffic.some((thing) => thing.kind === 'balloon'))
+    assert.ok(traffic.every((thing) => thing.y > terrainHeight(thing.x, thing.z)))
   })
 })

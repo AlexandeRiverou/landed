@@ -13,6 +13,8 @@ npm run dev
 
 Open the local URL printed by Vite. Use `W` / `Up` to climb, `S` / `Down` to descend, and `A` / `Left` or `D` / `Right` to bank. Hold `Shift` or `Space` to boost. `P` pauses and `R` resets the flight. The on-screen boost button also supports press-and-hold; flight controls are available on touch screens.
 
+Wayfinder field notes are optional scenic objectives. Follow the bearing arrow and fly through the amber ring to save a note; the clouds briefly form a giant, proud smile, the ground shifts into a festival palette, and wildflowers pop up before the next note arrives. There is no timer or penalty for taking your time. Cannons sit on dry mountain slopes as scenery to fly past.
+
 ## Verify and build
 
 ```sh

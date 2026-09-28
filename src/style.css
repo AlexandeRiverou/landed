@@ -106,9 +106,27 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .terrain-readout { display: flex; align-items: center; gap: 9px; margin-top: 13px; color: #52665e; font-size: 8px; }
 .terrain-line { height: 1px; width: 18px; background: #c58a59; }
 
+.wayfinder { position: absolute; z-index: 2; bottom: 84px; left: 5.2%; width: 224px; color: #304239; animation: settle-in 850ms 360ms both; }
+.wayfinder-heading, .note-range-row { display: flex; align-items: center; justify-content: space-between; font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; font-size: 8px; letter-spacing: 1px; }
+.wayfinder-heading { padding-top: 10px; border-top: 1px solid rgb(38 55 50 / 34%); color: #52665e; }
+.wayfinder-heading span:last-child { color: #795d3d; }
+.wayfinder > strong { display: block; margin-top: 10px; color: #f4f0df; font-family: "Iowan Old Style", "Palatino Linotype", Georgia, serif; font-size: 17px; font-weight: 400; letter-spacing: 0; text-shadow: 0 1px 10px rgb(35 55 51 / 18%); }
+.wayfinder > p { margin: 4px 0 11px; color: rgb(244 240 223 / 90%); font-size: 11px; }
+.note-range-row { color: #52665e; font-size: 7px; }
+.note-range-row span:last-child { color: #35483f; font-variant-numeric: tabular-nums; }
+.note-bearing { display: inline-flex; align-items: center; gap: 8px; }
+.note-arrow { display: block; width: 7px; height: 7px; border-top: 1px solid #795d3d; border-right: 1px solid #795d3d; transition: transform 120ms linear; }
+.note-progress { height: 2px; margin-top: 6px; overflow: hidden; background: rgb(38 55 50 / 19%); transform: translateZ(0); }
+.note-progress span { display: block; width: 100%; height: 100%; background: #d99d62; transform: scaleX(0); transform-origin: left center; transition: transform 180ms linear; }
+
 .sightline { top: 49%; left: 50%; display: flex; align-items: center; gap: 7px; transform: translate(-50%, -50%); opacity: .64; }
 .sightline span { width: 13px; height: 1px; background: rgb(244 240 223 / 72%); }
 .sightline i { width: 3px; height: 3px; border: 1px solid rgb(244 240 223 / 80%); border-radius: 50%; }
+.moment-toast { position: absolute; z-index: 5; top: 49%; left: 50%; display: grid; justify-items: center; gap: 8px; width: min(620px, calc(100% - 36px)); color: #fff6df; text-align: center; opacity: 0; pointer-events: none; transform: translate(-50%, -42%) scale(.94); transition: opacity 320ms ease, transform 420ms cubic-bezier(.2, .8, .2, 1); text-shadow: 0 2px 22px rgb(20 36 32 / 44%); }
+.moment-toast.is-visible { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+.moment-toast > span { color: #ffe0aa; font-family: "SFMono-Regular", Consolas, monospace; font-size: 9px; letter-spacing: 2px; }
+.moment-toast > strong { font-family: "Iowan Old Style", "Palatino Linotype", Georgia, serif; font-size: 38px; font-weight: 400; letter-spacing: 0; }
+.moment-toast > small { font-size: 12px; color: rgb(255 246 223 / 92%); }
 
 .flight-footer { right: 5.2%; bottom: 31px; left: 5.2%; display: flex; align-items: center; justify-content: space-between; animation: settle-in 850ms 300ms both; }
 .footer-coordinates { display: flex; align-items: center; gap: 11px; color: #34483f; font-family: "SFMono-Regular", Consolas, monospace; font-size: 9px; letter-spacing: .5px; }
@@ -171,6 +189,9 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
   .terrain-readout { margin-top: 9px; font-size: 7px; }
   .footer-note { display: none; }
   .flight-footer { right: 18px; bottom: 18px; left: 18px; }
+  .wayfinder { bottom: 78px; left: 22px; width: 190px; }
+  .moment-toast > strong { font-size: 27px; }
+  .moment-toast > small { font-size: 11px; }
   .touch-controls { gap: 5px; }
   .touch-control { width: 39px; height: 39px; }
 }
@@ -185,6 +206,7 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
   .data-row > span { font-size: 7px; }
   .footer-coordinates { display: none; }
   .flight-footer { justify-content: flex-end; }
+  .wayfinder { width: 160px; }
 }
 
 @media (max-height: 560px) and (orientation: landscape) {

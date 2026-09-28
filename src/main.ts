@@ -1,7 +1,8 @@
 import './style.css'
 import * as THREE from 'three'
 import { createFlightState, stepFlight } from './flight'
-import { generateForest, generateRockField, terrainHeight } from './world'
+import { createFieldNote, fieldNoteBearing, fieldNoteDistance, fieldNoteProgress, reachedFieldNote, type FieldNote } from './objectives'
+import { generateCannons, generateFlyingThings, generateForest, generateRockField, terrainGridOrigin, terrainHeight, terrainNormalAt, waterCoverage } from './world'
 
 const app = document.querySelector<HTMLDivElement>('#app')!
 
@@ -38,7 +39,20 @@ app.innerHTML = `
       <div class="terrain-readout"><span class="terrain-line" aria-hidden="true"></span><span id="terrain-label">ABOVE THE RIDGELINE</span></div>
     </section>
 
+    <section class="wayfinder" aria-label="Wayfinder field note">
+      <div class="wayfinder-heading"><span>FIELD NOTES</span><span id="note-count">00 KEPT</span></div>
+      <strong id="note-title">THE LONG VIEW</strong>
+      <p id="note-prompt">Fly through the amber ring</p>
+      <div class="note-range-row"><span>TO THE GATE</span><span class="note-bearing"><i class="note-arrow" id="note-arrow" aria-hidden="true"></i><span id="note-range">2.0 KM</span></span></div>
+      <div class="note-progress" aria-hidden="true"><span id="note-progress"></span></div>
+    </section>
+
     <div class="sightline" aria-hidden="true"><span></span><i></i><span></span></div>
+    <div class="moment-toast" id="moment-toast" aria-live="polite" aria-hidden="true">
+      <span>FIELD NOTE SAVED</span>
+      <strong id="moment-title">THE SKY IS SMILING</strong>
+      <small id="moment-copy">The clouds think they are helping.</small>
+    </div>
 
     <footer class="flight-footer">
       <div class="footer-coordinates"><span class="coordinate-mark" aria-hidden="true"></span><span id="coordinates">36 12 N&nbsp;&nbsp; 118 41 W</span></div>
@@ -67,6 +81,15 @@ const speedReadout = document.querySelector<HTMLSpanElement>('#speed')!
 const headingReadout = document.querySelector<HTMLSpanElement>('#heading')!
 const terrainReadout = document.querySelector<HTMLSpanElement>('#terrain-label')!
 const coordinatesReadout = document.querySelector<HTMLSpanElement>('#coordinates')!
+const noteCountReadout = document.querySelector<HTMLSpanElement>('#note-count')!
+const noteTitleReadout = document.querySelector<HTMLElement>('#note-title')!
+const notePromptReadout = document.querySelector<HTMLParagraphElement>('#note-prompt')!
+const noteRangeReadout = document.querySelector<HTMLSpanElement>('#note-range')!
+const noteProgressReadout = document.querySelector<HTMLSpanElement>('#note-progress')!
+const noteArrowReadout = document.querySelector<HTMLElement>('#note-arrow')!
+const momentToast = document.querySelector<HTMLDivElement>('#moment-toast')!
+const momentTitle = document.querySelector<HTMLElement>('#moment-title')!
+const momentCopy = document.querySelector<HTMLElement>('#moment-copy')!
 
 let renderer: THREE.WebGLRenderer
 try {
@@ -126,14 +149,16 @@ sky.frustumCulled = false
 scene.add(sky)
 
 const terrainMaterial = new THREE.ShaderMaterial({
-  uniforms: { uOffset: { value: new THREE.Vector2() } },
+  uniforms: { uOffset: { value: new THREE.Vector2() }, uFestival: { value: 0 } },
   vertexShader: `
     uniform vec2 uOffset;
     varying float vHeight;
     varying float vWater;
     varying float vVariation;
+    varying float vFineVariation;
     varying vec3 vNormal;
     varying vec2 vLocal;
+    varying vec2 vWorld;
 
     float hash(vec2 p) {
       return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
@@ -185,6 +210,7 @@ const terrainMaterial = new THREE.ShaderMaterial({
     void main() {
       vLocal = position.xz;
       vec2 point = position.xz + uOffset;
+      vWorld = point;
       float waterLevel;
       float water = waterAt(point, waterLevel);
       float height = mix(relief(point), waterLevel, water);
@@ -195,6 +221,7 @@ const terrainMaterial = new THREE.ShaderMaterial({
       vHeight = height;
       vWater = water;
       vVariation = noise(point * 0.0014);
+      vFineVariation = noise(point * 0.006);
       vNormal = normalize(vec3(left - right, 10.0, down - up));
       vec3 displaced = position;
       displaced.y = height;
@@ -202,27 +229,34 @@ const terrainMaterial = new THREE.ShaderMaterial({
     }
   `,
   fragmentShader: `
+    uniform float uFestival;
     varying float vHeight;
     varying float vWater;
     varying float vVariation;
+    varying float vFineVariation;
     varying vec3 vNormal;
     varying vec2 vLocal;
+    varying vec2 vWorld;
     void main() {
-      vec3 grass = mix(vec3(0.075, 0.19, 0.055), vec3(0.22, 0.36, 0.10), vVariation);
-      vec3 soil = vec3(0.39, 0.21, 0.10);
-      vec3 rock = vec3(0.36, 0.34, 0.29);
-      vec3 snow = vec3(0.88, 0.91, 0.89);
-      float exposedSoil = smoothstep(310.0, 540.0, vHeight) * (0.55 + vVariation * 0.45);
+      vec3 grass = mix(vec3(0.045, 0.19, 0.045), vec3(0.17, 0.37, 0.075), vVariation);
+      vec3 soil = mix(vec3(0.34, 0.16, 0.065), vec3(0.49, 0.28, 0.11), vFineVariation);
+      vec3 rock = mix(vec3(0.31, 0.29, 0.25), vec3(0.49, 0.43, 0.33), vVariation);
+      vec3 snow = vec3(0.76, 0.84, 0.80);
+      float dryPatches = smoothstep(0.64, 0.84, vFineVariation) * (1.0 - smoothstep(540.0, 790.0, vHeight)) * 0.7;
+      float exposedSoil = max(smoothstep(320.0, 650.0, vHeight) * (0.55 + vVariation * 0.45), dryPatches);
       vec3 ground = mix(grass, soil, exposedSoil);
-      ground = mix(ground, rock, smoothstep(500.0, 710.0, vHeight));
-      ground = mix(ground, snow, smoothstep(760.0, 940.0, vHeight));
-      float ripple = 0.5 + 0.5 * sin(vLocal.x * 0.003 + sin(vLocal.y * 0.002) * 2.0);
+      ground = mix(ground, rock, smoothstep(610.0, 940.0, vHeight));
+      ground = mix(ground, snow, smoothstep(1080.0, 1330.0, vHeight));
+      float ripple = 0.5 + 0.5 * sin(vWorld.x * 0.003 + sin(vWorld.y * 0.002) * 2.0);
       vec3 water = mix(vec3(0.055, 0.25, 0.29), vec3(0.28, 0.55, 0.54), smoothstep(0.56, 0.98, ripple));
       ground = mix(ground, water, smoothstep(0.12, 0.8, vWater));
       float light = 0.42 + 0.78 * max(dot(normalize(vNormal), normalize(vec3(-0.36, 0.86, 0.37))), 0.0);
       ground *= light;
-      float haze = smoothstep(3400.0, 6100.0, length(vLocal));
-      ground = mix(ground, vec3(0.70, 0.81, 0.78), haze * 0.82);
+      float haze = smoothstep(6200.0, 11200.0, length(vLocal));
+      ground = mix(ground, vec3(0.49, 0.65, 0.59), haze * 0.42);
+      vec3 festivalGround = mix(vec3(0.32, 0.55, 0.10), vec3(0.78, 0.38, 0.50), smoothstep(280.0, 1050.0, vHeight));
+      festivalGround = mix(festivalGround, vec3(0.11, 0.52, 0.72), smoothstep(0.12, 0.8, vWater));
+      ground = mix(ground, festivalGround, uFestival * 0.84);
       gl_FragColor = vec4(ground, 1.0);
       #include <tonemapping_fragment>
       #include <colorspace_fragment>
@@ -258,6 +292,53 @@ const rockOutcrops = new THREE.InstancedMesh(
   rockCapacity,
 )
 scene.add(forestTrunks, forestCrowns, forestBroadleaf, rockOutcrops)
+
+const cannonField = new THREE.Group()
+const cannonWood = new THREE.MeshStandardMaterial({ color: 0x674a31, roughness: 0.92, flatShading: true })
+const cannonIron = new THREE.MeshStandardMaterial({ color: 0x343b39, roughness: 0.68, metalness: 0.42, flatShading: true })
+const cannonWheelGeometry = new THREE.CylinderGeometry(13, 13, 6, 12)
+const cannonBarrelGeometry = new THREE.CylinderGeometry(6.5, 8.5, 52, 10)
+const cannonMuzzleGeometry = new THREE.CylinderGeometry(9.2, 8.5, 8, 10)
+scene.add(cannonField)
+
+function createCannon(site: ReturnType<typeof generateCannons>[number]): THREE.Group {
+  const cannon = new THREE.Group()
+  const normal = terrainNormalAt(site.x, site.z)
+  const surfaceNormal = new THREE.Vector3(normal.x, normal.y, normal.z)
+  const alignToSlope = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), surfaceNormal)
+  const turnOnSlope = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), site.rotation)
+  cannon.quaternion.copy(alignToSlope.multiply(turnOnSlope))
+  cannon.scale.setScalar(site.scale)
+  cannon.position.set(site.x + normal.x * 4, site.height + normal.y * 4, site.z + normal.z * 4)
+
+  const carriage = new THREE.Mesh(new THREE.BoxGeometry(40, 11, 48), cannonWood)
+  carriage.position.set(0, 17, 6)
+  cannon.add(carriage)
+
+  for (const side of [-1, 1]) {
+    const wheel = new THREE.Mesh(cannonWheelGeometry, cannonWood)
+    wheel.position.set(side * 22, 13, 8)
+    wheel.rotation.z = Math.PI / 2
+    cannon.add(wheel)
+    const hub = new THREE.Mesh(new THREE.CylinderGeometry(3.5, 3.5, 7, 8), cannonIron)
+    hub.position.copy(wheel.position)
+    hub.rotation.copy(wheel.rotation)
+    cannon.add(hub)
+  }
+
+  const barrel = new THREE.Mesh(cannonBarrelGeometry, cannonIron)
+  barrel.position.set(0, 34, -5)
+  barrel.rotation.x = -Math.PI / 2 + 0.48
+  cannon.add(barrel)
+  const muzzle = new THREE.Mesh(cannonMuzzleGeometry, cannonIron)
+  muzzle.position.set(0, 45.2, -26.2)
+  muzzle.rotation.x = barrel.rotation.x
+  cannon.add(muzzle)
+  const sight = new THREE.Mesh(new THREE.BoxGeometry(2.5, 7, 3), cannonWood)
+  sight.position.set(0, 41, -4)
+  cannon.add(sight)
+  return cannon
+}
 
 const glider = new THREE.Group()
 const ivory = new THREE.MeshStandardMaterial({ color: 0xe9e3d2, roughness: 0.58, metalness: 0.08, flatShading: true })
@@ -305,6 +386,79 @@ glider.add(tailFin)
 scene.add(glider)
 
 const flight = createFlightState()
+const waypointRing = new THREE.Mesh(
+  new THREE.TorusGeometry(78, 2.5, 12, 64),
+  new THREE.MeshBasicMaterial({ color: 0xffd28a, side: THREE.DoubleSide, toneMapped: false }),
+)
+waypointRing.visible = false
+scene.add(waypointRing)
+let activeFieldNote: FieldNote | null = null
+let fieldNotesKept = 0
+let nextFieldNoteSequence = 0
+let nextFieldNoteAt = 0
+let lastNoteRange = ''
+
+function beginFieldNote(): void {
+  activeFieldNote = createFieldNote(nextFieldNoteSequence, flight.x, flight.y, flight.z, flight.heading)
+  nextFieldNoteSequence += 1
+  waypointRing.position.set(activeFieldNote.x, activeFieldNote.y, activeFieldNote.z)
+  waypointRing.rotation.set(0, activeFieldNote.heading, 0)
+  waypointRing.visible = true
+  noteCountReadout.textContent = `${String(fieldNotesKept).padStart(2, '0')} KEPT`
+  noteTitleReadout.textContent = activeFieldNote.title
+  notePromptReadout.textContent = 'Fly through the amber ring'
+  lastNoteRange = ''
+}
+
+function resetFieldNotes(): void {
+  activeFieldNote = null
+  fieldNotesKept = 0
+  nextFieldNoteSequence = 0
+  nextFieldNoteAt = performance.now() + 1800
+  waypointRing.visible = false
+  noteCountReadout.textContent = '00 KEPT'
+  noteTitleReadout.textContent = 'THE NEXT VIEW'
+  notePromptReadout.textContent = 'A new wayfinder will appear soon'
+  noteRangeReadout.textContent = 'SOON'
+  noteProgressReadout.style.transform = 'scaleX(0)'
+  lastNoteRange = 'SOON'
+}
+
+function updateFieldNote(now: number): void {
+  if (!activeFieldNote) {
+    if (now >= nextFieldNoteAt) beginFieldNote()
+    else return
+  }
+  if (!activeFieldNote) return
+
+  const distance = fieldNoteDistance(activeFieldNote, flight.x, flight.y, flight.z)
+  waypointRing.scale.setScalar(1 + Math.sin(now * 0.002) * 0.035)
+  waypointRing.rotation.z = Math.sin(now * 0.0007) * 0.035
+  const rangeText = `${(distance / 1000).toFixed(1)} KM`
+  if (rangeText !== lastNoteRange) {
+    noteRangeReadout.textContent = rangeText
+    lastNoteRange = rangeText
+  }
+  const bearing = fieldNoteBearing(activeFieldNote, flight.x, flight.z, flight.heading)
+  noteArrowReadout.style.transform = `rotate(${-45 - bearing * 180 / Math.PI}deg)`
+  noteProgressReadout.style.transform = `scaleX(${fieldNoteProgress(activeFieldNote, flight.x, flight.z)})`
+
+  if (!paused && reachedFieldNote(activeFieldNote, flight.x, flight.y, flight.z)) {
+    fieldNotesKept += 1
+    noteCountReadout.textContent = `${String(fieldNotesKept).padStart(2, '0')} KEPT`
+    noteTitleReadout.textContent = `SKY PORTRAIT ${String(fieldNotesKept).padStart(2, '0')}`
+    notePromptReadout.textContent = 'The clouds are extremely pleased with themselves.'
+    noteRangeReadout.textContent = 'LOOK UP'
+    noteProgressReadout.style.transform = 'scaleX(1)'
+    lastNoteRange = 'LOOK UP'
+    activeFieldNote = null
+    waypointRing.visible = false
+    startCloudCelebration(now)
+    nextFieldNoteAt = now + 11000
+  }
+}
+
+beginFieldNote()
 const treeTransform = new THREE.Object3D()
 const foliageColor = new THREE.Color()
 let forestRegionX = Number.NaN
@@ -346,14 +500,25 @@ function updateForest(): void {
   })
   const rocks = generateRockField(regionX * 6000, regionZ * 6000, rockCapacity)
   rocks.forEach((rock, index) => {
-    treeTransform.position.set(rock.x, rock.height + rock.scale * 5, rock.z)
-    treeTransform.rotation.set(rock.rotation * 0.25, rock.rotation, rock.rotation * 0.18)
+    const normal = terrainNormalAt(rock.x, rock.z)
+    const surfaceNormal = new THREE.Vector3(normal.x, normal.y, normal.z)
+    const alignToSlope = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), surfaceNormal)
+    const turnOnSlope = new THREE.Quaternion().setFromAxisAngle(surfaceNormal, rock.rotation)
+    const supportHeight = rock.scale * 8 * 0.72
+    treeTransform.position.set(
+      rock.x + normal.x * supportHeight,
+      rock.height + normal.y * supportHeight,
+      rock.z + normal.z * supportHeight,
+    )
+    treeTransform.quaternion.copy(turnOnSlope.multiply(alignToSlope))
     treeTransform.scale.set(rock.scale * 1.25, rock.scale * 0.72, rock.scale)
     treeTransform.updateMatrix()
     rockOutcrops.setMatrixAt(index, treeTransform.matrix)
     foliageColor.setHSL(0.1, 0.08, 0.32 + rock.scale * 0.055)
     rockOutcrops.setColorAt(index, foliageColor)
   })
+  cannonField.clear()
+  for (const site of generateCannons(regionX * 6000, regionZ * 6000, 12)) cannonField.add(createCannon(site))
   forestTrunks.count = trees.length
   forestCrowns.count = pineCount
   forestBroadleaf.count = broadleafCount
@@ -380,13 +545,143 @@ const random = () => {
   return randomSeed / 4294967296
 }
 
+interface FestivalFlower {
+  x: number
+  z: number
+  height: number
+  scale: number
+  rotation: number
+  hue: number
+  normal: THREE.Vector3
+}
+
+const flowerCapacity = 96
+const flowerStemInstances = new THREE.InstancedMesh(
+  new THREE.CylinderGeometry(0.8, 1.2, 22, 5),
+  new THREE.MeshStandardMaterial({ color: 0x477d3d, roughness: 0.96, flatShading: true }),
+  flowerCapacity,
+)
+const flowerHeadInstances = new THREE.InstancedMesh(
+  new THREE.DodecahedronGeometry(8, 0),
+  new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.82, flatShading: true }),
+  flowerCapacity,
+)
+const flowerCenterInstances = new THREE.InstancedMesh(
+  new THREE.SphereGeometry(3.2, 7, 5),
+  new THREE.MeshStandardMaterial({ color: 0xffd26a, roughness: 0.78, flatShading: true }),
+  flowerCapacity,
+)
+scene.add(flowerStemInstances, flowerHeadInstances, flowerCenterInstances)
+let festivalFlowers: FestivalFlower[] = []
+let worldCelebrationActive = false
+let worldCelebrationStartedAt = 0
+const flowerTransform = new THREE.Object3D()
+const flowerColor = new THREE.Color()
+
+function plantCelebrationFlowers(): number {
+  festivalFlowers = []
+  for (let attempt = 0; attempt < flowerCapacity * 12 && festivalFlowers.length < flowerCapacity; attempt += 1) {
+    const angle = random() * Math.PI * 2
+    const distance = 300 + Math.sqrt(random()) * 1350
+    const x = flight.x + Math.cos(angle) * distance
+    const z = flight.z + Math.sin(angle) * distance
+    if (waterCoverage(x, z) > 0.08) continue
+    const height = terrainHeight(x, z)
+    if (height > 1600) continue
+    const surface = terrainNormalAt(x, z)
+    festivalFlowers.push({
+      x,
+      z,
+      height,
+      scale: 0.55 + random() * 0.9,
+      rotation: random() * Math.PI * 2,
+      hue: random() * 0.98,
+      normal: new THREE.Vector3(surface.x, surface.y, surface.z),
+    })
+  }
+  return festivalFlowers.length
+}
+
+function updateCelebrationFlowers(growth: number): void {
+  festivalFlowers.forEach((flower, index) => {
+    const scale = flower.scale * growth
+    const alignToSlope = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), flower.normal)
+    const turnOnSlope = new THREE.Quaternion().setFromAxisAngle(flower.normal, flower.rotation)
+    flowerTransform.quaternion.copy(turnOnSlope.multiply(alignToSlope))
+    flowerTransform.position.set(
+      flower.x + flower.normal.x * scale * 10,
+      flower.height + flower.normal.y * scale * 10,
+      flower.z + flower.normal.z * scale * 10,
+    )
+    flowerTransform.scale.set(scale, scale, scale)
+    flowerTransform.updateMatrix()
+    flowerStemInstances.setMatrixAt(index, flowerTransform.matrix)
+
+    flowerTransform.position.set(
+      flower.x + flower.normal.x * scale * 23,
+      flower.height + flower.normal.y * scale * 23,
+      flower.z + flower.normal.z * scale * 23,
+    )
+    flowerTransform.scale.set(scale, scale * 0.8, scale)
+    flowerTransform.updateMatrix()
+    flowerHeadInstances.setMatrixAt(index, flowerTransform.matrix)
+    flowerTransform.scale.setScalar(scale * 0.43)
+    flowerTransform.updateMatrix()
+    flowerCenterInstances.setMatrixAt(index, flowerTransform.matrix)
+    flowerColor.setHSL(flower.hue, 0.78, 0.57)
+    flowerHeadInstances.setColorAt(index, flowerColor)
+  })
+
+  flowerStemInstances.count = festivalFlowers.length
+  flowerHeadInstances.count = festivalFlowers.length
+  flowerCenterInstances.count = festivalFlowers.length
+  flowerStemInstances.instanceMatrix.needsUpdate = true
+  flowerHeadInstances.instanceMatrix.needsUpdate = true
+  flowerCenterInstances.instanceMatrix.needsUpdate = true
+  if (flowerHeadInstances.instanceColor) flowerHeadInstances.instanceColor.needsUpdate = true
+  flowerStemInstances.computeBoundingSphere()
+  flowerHeadInstances.computeBoundingSphere()
+  flowerCenterInstances.computeBoundingSphere()
+}
+
+function startWorldCelebration(now: number): void {
+  worldCelebrationStartedAt = now
+  worldCelebrationActive = true
+  momentTitle.textContent = 'THE SKY IS SMILING'
+  momentCopy.textContent = `${plantCelebrationFlowers()} emergency flowers have been planted.`
+  momentToast.setAttribute('aria-hidden', 'false')
+  momentToast.classList.add('is-visible')
+}
+
+function updateWorldCelebration(now: number): void {
+  if (!worldCelebrationActive) return
+
+  const elapsed = now - worldCelebrationStartedAt
+  const reveal = THREE.MathUtils.smoothstep(elapsed / 1200, 0, 1)
+  const fade = 1 - THREE.MathUtils.smoothstep((elapsed - 7600) / 2300, 0, 1)
+  ;(terrainMaterial.uniforms.uFestival.value as number) = reveal * fade
+  const flowerGrowth = THREE.MathUtils.smoothstep(elapsed / 850, 0, 1)
+    * (1 - THREE.MathUtils.smoothstep((elapsed - 7700) / 1800, 0, 1))
+  updateCelebrationFlowers(flowerGrowth)
+  momentToast.classList.toggle('is-visible', elapsed < 4800)
+
+  if (elapsed >= 10500) {
+    worldCelebrationActive = false
+    momentToast.setAttribute('aria-hidden', 'true')
+    momentToast.classList.remove('is-visible')
+    ;(terrainMaterial.uniforms.uFestival.value as number) = 0
+    festivalFlowers = []
+    updateCelebrationFlowers(0)
+  }
+}
+
 function createCloud(): THREE.Group {
   const cloud = new THREE.Group()
   const count = 5 + Math.floor(random() * 5)
   for (let index = 0; index < count; index += 1) {
     const puff = new THREE.Mesh(cloudGeometry, cloudMaterial)
-    puff.position.set((random() - 0.5) * 210, (random() - 0.5) * 45, (random() - 0.5) * 125)
-    puff.scale.set(0.58 + random() * 0.8, 0.2 + random() * 0.18, 0.42 + random() * 0.58)
+    puff.position.set((random() - 0.5) * 190, (random() - 0.5) * 36, (random() - 0.5) * 130)
+    puff.scale.set(95 + random() * 105, 32 + random() * 28, 70 + random() * 75)
     cloud.add(puff)
   }
   cloud.position.set((random() - 0.5) * 7400, 1450 + random() * 780, (random() - 0.5) * 7400)
@@ -395,6 +690,219 @@ function createCloud(): THREE.Group {
 }
 
 const clouds = Array.from({ length: 30 }, createCloud)
+let cloudCelebrationActive = false
+let cloudCelebrationStartedAt = 0
+let cloudCelebrationHomes: THREE.Vector3[] = []
+let cloudCelebrationFaces: THREE.Vector3[] = []
+
+function startCloudCelebration(now: number): void {
+  const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(glider.quaternion).normalize()
+  const right = new THREE.Vector3(1, 0, 0).applyQuaternion(glider.quaternion).normalize()
+  const center = new THREE.Vector3(flight.x, flight.y, flight.z)
+    .addScaledVector(forward, 1650)
+    .add(new THREE.Vector3(0, 470, 0))
+
+  cloudCelebrationHomes = clouds.map((cloud) => cloud.position.clone())
+  cloudCelebrationFaces = clouds.map((_, index) => {
+    let horizontal: number
+    let vertical: number
+
+    if (index < 8) {
+      const eye = index < 4 ? -460 : 460
+      const part = index % 4
+      const angle = part * Math.PI / 2
+      horizontal = eye + Math.cos(angle) * 105
+      vertical = 145 + Math.sin(angle) * 115
+    } else if (index < 23) {
+      const part = index - 8
+      horizontal = (part / 14 - 0.5) * 1350
+      vertical = -175 + (horizontal * horizontal) / 3600
+    } else if (index < 27) {
+      horizontal = index % 2 === 0 ? -760 : 760
+      vertical = -80 - (index % 3) * 48
+    } else {
+      const sparkles = [-650, 0, 650]
+      horizontal = sparkles[(index - 27) % sparkles.length]
+      vertical = index === 28 ? 430 : 330
+    }
+
+    return center.clone().addScaledVector(right, horizontal).add(new THREE.Vector3(0, vertical, 0))
+  })
+  cloudCelebrationStartedAt = now
+  cloudCelebrationActive = true
+  startWorldCelebration(now)
+}
+
+function updateCloudCelebration(now: number): void {
+  if (!cloudCelebrationActive) return
+
+  const elapsed = now - cloudCelebrationStartedAt
+  const gatherDuration = 1800
+  const portraitDuration = 6800
+  const dissolveDuration = 1900
+  const gather = THREE.MathUtils.smoothstep(elapsed / gatherDuration, 0, 1)
+  const dissolve = THREE.MathUtils.smoothstep((elapsed - gatherDuration - portraitDuration) / dissolveDuration, 0, 1)
+
+  clouds.forEach((cloud, index) => {
+    if (elapsed < gatherDuration) {
+      cloud.position.lerpVectors(cloudCelebrationHomes[index], cloudCelebrationFaces[index], gather)
+    } else if (elapsed < gatherDuration + portraitDuration) {
+      cloud.position.copy(cloudCelebrationFaces[index])
+      cloud.position.y += Math.sin(now * 0.0018 + index) * 14
+    } else if (elapsed < gatherDuration + portraitDuration + dissolveDuration) {
+      cloud.position.lerpVectors(cloudCelebrationFaces[index], cloudCelebrationHomes[index], dissolve)
+    } else {
+      cloudCelebrationActive = false
+    }
+  })
+}
+
+interface TrafficActor {
+  group: THREE.Group
+  spawn: ReturnType<typeof generateFlyingThings>[number]
+  distance: number
+  wings: Array<{ left: THREE.Group; right: THREE.Group; phase: number }>
+}
+
+const birdMaterial = new THREE.MeshStandardMaterial({ color: 0x34453c, roughness: 0.85, flatShading: true, side: THREE.DoubleSide })
+const birdBodyGeometry = new THREE.ConeGeometry(0.28, 1.6, 5)
+const leftWingShape = new THREE.Shape()
+leftWingShape.moveTo(0, 0)
+leftWingShape.lineTo(-4.8, -0.25)
+leftWingShape.lineTo(-0.5, 0.7)
+leftWingShape.closePath()
+const rightWingShape = new THREE.Shape()
+rightWingShape.moveTo(0, 0)
+rightWingShape.lineTo(4.8, -0.25)
+rightWingShape.lineTo(0.5, 0.7)
+rightWingShape.closePath()
+const leftWingGeometry = new THREE.ShapeGeometry(leftWingShape)
+const rightWingGeometry = new THREE.ShapeGeometry(rightWingShape)
+const planeMaterial = new THREE.MeshStandardMaterial({ color: 0xd76c42, roughness: 0.45, metalness: 0.08, flatShading: true })
+const balloonMaterials = [
+  new THREE.MeshStandardMaterial({ color: 0xc7543f, roughness: 0.72, flatShading: true }),
+  new THREE.MeshStandardMaterial({ color: 0xd99f52, roughness: 0.72, flatShading: true }),
+]
+let trafficActors: TrafficActor[] = []
+let trafficRegionX = Number.NaN
+let trafficRegionZ = Number.NaN
+
+function createBirdFlock(): { group: THREE.Group; wings: TrafficActor['wings'] } {
+  const group = new THREE.Group()
+  const wings: TrafficActor['wings'] = []
+  for (let index = 0; index < 5; index += 1) {
+    const bird = new THREE.Group()
+    bird.position.set((index - 2) * 7, (index % 2) * 2, Math.abs(index - 2) * 5)
+    const body = new THREE.Mesh(birdBodyGeometry, birdMaterial)
+    body.rotation.x = -Math.PI / 2
+    bird.add(body)
+    const left = new THREE.Group()
+    left.position.x = -0.2
+    const leftWing = new THREE.Mesh(leftWingGeometry, birdMaterial)
+    leftWing.rotation.x = -Math.PI / 2
+    left.add(leftWing)
+    const right = new THREE.Group()
+    right.position.x = 0.2
+    const rightWing = new THREE.Mesh(rightWingGeometry, birdMaterial)
+    rightWing.rotation.x = -Math.PI / 2
+    right.add(rightWing)
+    bird.add(left, right)
+    group.add(bird)
+    wings.push({ left, right, phase: index * 0.7 })
+  }
+  return { group, wings }
+}
+
+function createTrafficModel(kind: TrafficActor['spawn']['kind']): { group: THREE.Group; wings: TrafficActor['wings'] } {
+  const group = new THREE.Group()
+  const wings: TrafficActor['wings'] = []
+
+  if (kind === 'birds') return createBirdFlock()
+
+  if (kind === 'airplane') {
+    const airplane = new THREE.Group()
+    const fuselage = new THREE.Mesh(new THREE.ConeGeometry(0.8, 12, 7), planeMaterial)
+    fuselage.rotation.x = -Math.PI / 2
+    airplane.add(fuselage)
+    const wing = new THREE.Mesh(new THREE.BoxGeometry(22, 0.6, 4.3), ivory)
+    wing.position.y = 0.1
+    airplane.add(wing)
+    const tail = new THREE.Mesh(new THREE.BoxGeometry(7, 0.45, 2), underside)
+    tail.position.set(0, 0.1, 4.2)
+    airplane.add(tail)
+    const tailFin = new THREE.Mesh(new THREE.BoxGeometry(0.35, 2.1, 2), planeMaterial)
+    tailFin.position.set(0, 0.8, 4)
+    airplane.add(tailFin)
+    const propeller = new THREE.Mesh(new THREE.BoxGeometry(5.4, 0.22, 0.26), canopy)
+    propeller.position.z = -6.2
+    airplane.add(propeller)
+    group.add(airplane)
+    return { group, wings }
+  }
+
+  const envelope = new THREE.Mesh(new THREE.SphereGeometry(12, 12, 10), balloonMaterials[0])
+  envelope.scale.set(0.8, 1, 0.8)
+  envelope.position.y = 6
+  group.add(envelope)
+  const lowerBand = new THREE.Mesh(new THREE.TorusGeometry(9, 1.2, 5, 12), balloonMaterials[1])
+  lowerBand.position.y = 1
+  lowerBand.rotation.x = Math.PI / 2
+  group.add(lowerBand)
+  const basket = new THREE.Mesh(new THREE.BoxGeometry(4, 3.5, 4), underside)
+  basket.position.y = -10
+  group.add(basket)
+  const ropeMaterial = new THREE.MeshStandardMaterial({ color: 0xe0c9a0, roughness: 0.9 })
+  const ropeGeometry = new THREE.CylinderGeometry(0.12, 0.12, 8, 4)
+  for (const x of [-1.2, 1.2]) {
+    for (const z of [-1.2, 1.2]) {
+      const rope = new THREE.Mesh(ropeGeometry, ropeMaterial)
+      rope.position.set(x, -5.5, z)
+      group.add(rope)
+    }
+  }
+  return { group, wings }
+}
+
+function updateTraffic(delta: number, now: number): void {
+  const regionX = Math.round(flight.x / 6000)
+  const regionZ = Math.round(flight.z / 6000)
+  if (regionX !== trafficRegionX || regionZ !== trafficRegionZ) {
+    for (const actor of trafficActors) scene.remove(actor.group)
+    trafficRegionX = regionX
+    trafficRegionZ = regionZ
+    trafficActors = generateFlyingThings(regionX * 6000, regionZ * 6000, 12).map((spawn) => {
+      const model = createTrafficModel(spawn.kind)
+      model.group.scale.setScalar(spawn.kind === 'birds' ? 1.6 : spawn.kind === 'airplane' ? 0.8 : 1)
+      model.group.rotation.y = spawn.heading
+      scene.add(model.group)
+      return { group: model.group, wings: model.wings, spawn, distance: 0 }
+    })
+  }
+
+  for (const actor of trafficActors) {
+    actor.distance = Math.min(actor.distance + actor.spawn.speed * delta, 11200)
+    const directionX = -Math.sin(actor.spawn.heading)
+    const directionZ = -Math.cos(actor.spawn.heading)
+    const x = actor.spawn.x + directionX * actor.distance
+    const z = actor.spawn.z + directionZ * actor.distance
+    const clearance = actor.spawn.kind === 'balloon' ? 850 : actor.spawn.kind === 'airplane' ? 550 : 300
+    const altitude = Math.max(actor.spawn.y, terrainHeight(x, z) + clearance)
+    actor.group.position.set(
+      x,
+      altitude + Math.sin(now * 0.0012 + actor.spawn.phase) * (actor.spawn.kind === 'birds' ? 16 : 6),
+      z,
+    )
+    actor.group.visible = actor.distance < 10800
+    if (actor.spawn.kind === 'birds') {
+      for (const wings of actor.wings) {
+        const flap = Math.sin(now * 0.009 + actor.spawn.phase + wings.phase) * 0.55
+        wings.left.rotation.z = flap
+        wings.right.rotation.z = -flap
+      }
+    }
+  }
+}
+
 const pressedKeys = new Set<string>()
 let touchRoll = 0
 let touchPitch = 0
@@ -417,6 +925,7 @@ function setPaused(value: boolean): void {
 
 function resetFlight(): void {
   Object.assign(flight, createFlightState())
+  resetFieldNotes()
   setPaused(false)
 }
 
@@ -505,8 +1014,10 @@ function render(now: number): void {
   glider.position.set(flight.x, flight.y, flight.z)
   glider.rotation.order = 'YXZ'
   glider.rotation.set(flight.pitch, flight.heading, flight.bank)
-  terrain.position.set(flight.x, 0, flight.z)
-  ;(terrainMaterial.uniforms.uOffset.value as THREE.Vector2).set(flight.x, flight.z)
+  const terrainOriginX = terrainGridOrigin(flight.x)
+  const terrainOriginZ = terrainGridOrigin(flight.z)
+  terrain.position.set(terrainOriginX, 0, terrainOriginZ)
+  ;(terrainMaterial.uniforms.uOffset.value as THREE.Vector2).set(terrainOriginX, terrainOriginZ)
   updateForest()
 
   const cameraOffset = new THREE.Vector3(0, 13, 58).applyQuaternion(glider.quaternion)
@@ -516,15 +1027,22 @@ function render(now: number): void {
   camera.lookAt(cameraTarget)
   sky.position.copy(camera.position)
 
-  for (const cloud of clouds) {
-    const distance = Math.hypot(cloud.position.x - flight.x, cloud.position.z - flight.z)
-    if (distance > 6700) {
-      const angle = random() * Math.PI * 2
-      const radius = 2800 + random() * 2100
-      cloud.position.set(flight.x + Math.cos(angle) * radius, 1450 + random() * 780, flight.z + Math.sin(angle) * radius)
+  if (cloudCelebrationActive) {
+    updateCloudCelebration(now)
+  } else {
+    for (const cloud of clouds) {
+      const distance = Math.hypot(cloud.position.x - flight.x, cloud.position.z - flight.z)
+      if (distance > 6700) {
+        const angle = random() * Math.PI * 2
+        const radius = 2800 + random() * 2100
+        cloud.position.set(flight.x + Math.cos(angle) * radius, 1450 + random() * 780, flight.z + Math.sin(angle) * radius)
+      }
     }
   }
 
+  updateTraffic(delta, now)
+  updateFieldNote(now)
+  updateWorldCelebration(now)
   updateReadouts()
   renderer.render(scene, camera)
   requestAnimationFrame(render)

@@ -1,4 +1,11 @@
-import { terrainHeight } from './world'
+import { highestTerrainAlongPath } from './world'
+
+const CRUISE_SPEED = 64
+const BOOST_SPEED = 64
+const MAX_BANK = 0.78
+const MAX_PITCH = 0.48
+const MIN_PITCH_AUTHORITY = 0.08
+const PITCH_CHARGE_RATE = 0.42
 
 export interface FlightState {
   x: number
@@ -6,6 +13,8 @@ export interface FlightState {
   z: number
   heading: number
   pitch: number
+  pitchCharge: number
+  pitchDirection: number
   bank: number
   speed: number
   boost: number
@@ -18,23 +27,33 @@ export interface FlightControls {
 }
 
 export function createFlightState(): FlightState {
-  return { x: 0, y: 1320, z: 0, heading: 0, pitch: 0, bank: 0, speed: 52, boost: 0 }
+  return { x: 0, y: 1320, z: 0, heading: 0, pitch: 0, pitchCharge: 0, pitchDirection: 0, bank: 0, speed: CRUISE_SPEED, boost: 0 }
 }
 
 export function stepFlight(state: FlightState, controls: FlightControls, elapsed: number): void {
   const delta = Math.min(Math.max(elapsed, 0), 0.05)
+  const previousX = state.x
+  const previousZ = state.z
   const roll = Math.max(-1, Math.min(controls.roll, 1))
   const pitch = Math.max(-1, Math.min(controls.pitch, 1))
+  const pitchDirection = Math.sign(pitch)
 
-  state.bank += (roll * 0.58 - state.bank) * Math.min(1, delta * 2.8)
-  state.pitch += (pitch * 0.2 - state.pitch) * Math.min(1, delta * 2.1)
-  state.boost += ((controls.boost ? 1 : 0) - state.boost) * Math.min(1, delta * 3.6)
-  state.speed = 52 + state.boost * 68
-  state.heading -= state.bank * 0.42 * delta
+  state.bank += (-roll * MAX_BANK - state.bank) * Math.min(1, delta * 2.6)
+  if (pitchDirection !== state.pitchDirection) {
+    state.pitchCharge = 0
+    if (pitchDirection !== 0 && Math.sign(state.pitch) !== pitchDirection) state.pitch *= 0.25
+    state.pitchDirection = pitchDirection
+  }
+  state.pitchCharge = Math.min(1, state.pitchCharge + (pitchDirection === 0 ? 0 : PITCH_CHARGE_RATE * delta))
+  const pitchAuthority = MIN_PITCH_AUTHORITY + (MAX_PITCH - MIN_PITCH_AUTHORITY) * state.pitchCharge
+  state.pitch += (pitch * pitchAuthority - state.pitch) * Math.min(1, delta * 3.2)
+  state.boost = Math.max(0, Math.min(1, state.boost + (controls.boost ? 0.24 : -0.36) * delta))
+  state.speed = CRUISE_SPEED + state.boost * BOOST_SPEED
+  state.heading += state.bank * 0.44 * Math.sqrt(state.speed / CRUISE_SPEED) * delta
   state.x -= Math.sin(state.heading) * state.speed * delta
   state.z -= Math.cos(state.heading) * state.speed * delta
-  state.y += state.pitch * state.speed * 0.72 * delta
+  state.y += state.pitch * state.speed * 0.86 * delta
 
-  const floor = terrainHeight(state.x, state.z) + 170
+  const floor = highestTerrainAlongPath(previousX, previousZ, state.x, state.z) + 170
   state.y = Math.max(floor, Math.min(state.y, 2400))
 }

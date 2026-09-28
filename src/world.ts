@@ -26,7 +26,7 @@ function rawTerrainHeight(x: number, z: number): number {
   const broad = noise(x * 0.00008, z * 0.00008) * 170
   const foothills = noise(x * 0.00022, z * 0.00022) * 110
   const ridgeShape = 1 - Math.abs(noise(x * 0.00058, z * 0.00058) * 2 - 1)
-  const ridges = ridgeShape ** 1.7 * 720
+  const ridges = ridgeShape ** 1.7 * 1150
   const detail = noise(x * 0.0024, z * 0.0024) * 36
   return 35 + broad + foothills + ridges + detail
 }
@@ -73,6 +73,71 @@ export function terrainHeight(x: number, z: number): number {
   const ground = rawTerrainHeight(x, z)
   const water = waterAt(x, z)
   return ground * (1 - water.coverage) + water.level * water.coverage
+}
+
+export function terrainGridOrigin(position: number): number {
+  const spacing = 12000 / 190
+  return Math.round(position / spacing) * spacing
+}
+
+export interface TerrainNormal {
+  x: number
+  y: number
+  z: number
+}
+
+export function terrainNormalAt(x: number, z: number): TerrainNormal {
+  const sampleDistance = 24
+  const horizontal = terrainHeight(x - sampleDistance, z) - terrainHeight(x + sampleDistance, z)
+  const depth = terrainHeight(x, z - sampleDistance) - terrainHeight(x, z + sampleDistance)
+  const length = Math.hypot(horizontal, sampleDistance * 2, depth)
+  return { x: horizontal / length, y: sampleDistance * 2 / length, z: depth / length }
+}
+
+export function highestTerrainAlongPath(startX: number, startZ: number, endX: number, endZ: number): number {
+  const distance = Math.hypot(endX - startX, endZ - startZ)
+  const samples = Math.max(2, Math.ceil(distance / 18))
+  let highest = Number.NEGATIVE_INFINITY
+  for (let index = 0; index <= samples; index += 1) {
+    const amount = index / samples
+    const x = startX + (endX - startX) * amount
+    const z = startZ + (endZ - startZ) * amount
+    highest = Math.max(highest, terrainHeight(x, z))
+  }
+  return highest
+}
+
+export type FlyingThingKind = 'birds' | 'airplane' | 'balloon'
+
+export interface FlyingThingSpawn {
+  x: number
+  y: number
+  z: number
+  heading: number
+  speed: number
+  phase: number
+  kind: FlyingThingKind
+}
+
+export function generateFlyingThings(centerX: number, centerZ: number, count = 8): FlyingThingSpawn[] {
+  return Array.from({ length: count }, (_, index) => {
+    const seed = index + 1
+    const x = centerX + (hash(seed + centerX * 0.013, centerZ * 0.017 + 31.7) - 0.5) * 7600
+    const z = centerZ - 1600 - hash(seed + centerZ * 0.011, centerX * 0.019 + 69.3) * 8200
+    const kind: FlyingThingKind = index % 7 === 5 ? 'balloon' : index % 3 === 0 ? 'airplane' : 'birds'
+    const clearance = kind === 'balloon' ? 850 : kind === 'airplane' ? 550 : 300
+    const speed = kind === 'balloon' ? 7 : kind === 'airplane' ? 74 : 28
+
+    return {
+      x,
+      y: terrainHeight(x, z) + clearance + hash(seed + 44.1, centerX + centerZ) * 130,
+      z,
+      heading: (hash(seed + 8.5, centerX * 0.003 + centerZ) - 0.5) * 0.8,
+      speed,
+      phase: hash(seed + 71.2, centerZ * 0.007 + centerX) * Math.PI * 2,
+      kind,
+    }
+  })
 }
 
 export interface TreePosition {
@@ -144,7 +209,7 @@ export function generateRockField(centerX: number, centerZ: number, maximum = 42
       if (noise(x * 0.0008, z * 0.0008) < 0.56 || hash(cellX + 344.9, cellZ + 54.1) < 0.38) continue
 
       const height = terrainHeight(x, z)
-      if (height < 520 || height > 1050 || waterCoverage(x, z) > 0.05) continue
+      if (height < 520 || height > 1420 || waterCoverage(x, z) > 0.05) continue
 
       rocks.push({
         x,
@@ -157,4 +222,46 @@ export function generateRockField(centerX: number, centerZ: number, maximum = 42
   }
 
   return rocks
+}
+
+export interface CannonSite {
+  x: number
+  z: number
+  height: number
+  scale: number
+  rotation: number
+}
+
+export function generateCannons(centerX: number, centerZ: number, maximum = 12): CannonSite[] {
+  const cannons: CannonSite[] = []
+  const spacing = 980
+  const halfSize = 3000
+  const startX = Math.floor((centerX - halfSize) / spacing)
+  const endX = Math.floor((centerX + halfSize) / spacing)
+  const startZ = Math.floor((centerZ - halfSize) / spacing)
+  const endZ = Math.floor((centerZ + halfSize) / spacing)
+
+  for (let cellX = startX; cellX <= endX && cannons.length < maximum; cellX += 1) {
+    for (let cellZ = startZ; cellZ <= endZ && cannons.length < maximum; cellZ += 1) {
+      if (noise(cellX + 82.7, cellZ + 19.3) < 0.38) continue
+      const x = (cellX + 0.18 + hash(cellX + 731.2, cellZ + 51.8) * 0.64) * spacing
+      const z = (cellZ + 0.18 + hash(cellX + 31.4, cellZ + 743.6) * 0.64) * spacing
+      const height = terrainHeight(x, z)
+      if (height < 780 || height > 1500 || waterCoverage(x, z) > 0.05) continue
+
+      const slope = Math.abs(terrainHeight(x + 24, z) - terrainHeight(x - 24, z))
+        + Math.abs(terrainHeight(x, z + 24) - terrainHeight(x, z - 24))
+      if (slope > 150) continue
+
+      cannons.push({
+        x,
+        z,
+        height,
+        scale: 0.8 + hash(cellX + 429.6, cellZ + 177.2) * 0.7,
+        rotation: hash(cellX + 214.5, cellZ + 517.9) * Math.PI * 2,
+      })
+    }
+  }
+
+  return cannons
 }
