@@ -70,7 +70,7 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .flight-status { display: flex; align-items: center; gap: 9px; margin-left: auto; margin-right: 27px; color: #35483f; }
 .status-light, .location-dot { width: 6px; height: 6px; border-radius: 50%; background: #c58a59; box-shadow: 0 0 0 3px rgb(197 138 89 / 17%); }
 .flight-actions { display: flex; align-items: center; gap: 9px; }
-.pause-button, .reset-button {
+.boost-button, .pause-button, .reset-button {
   height: 36px;
   display: inline-flex;
   align-items: center;
@@ -85,6 +85,8 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 }
 .pause-button:hover, .reset-button:hover { background: rgb(248 247 235 / 88%); border-color: rgb(38 55 50 / 60%); }
 .reset-button { padding: 0 12px; color: var(--muted-ink); }
+.boost-button { padding: 0 12px; border-color: rgb(123 87 56 / 42%); color: #704e33; }
+.boost-button.is-active { border-color: #80532e; background: #80532e; color: #fff5dd; box-shadow: 0 0 16px rgb(128 83 46 / 32%); }
 .pause-icon { display: flex; gap: 3px; height: 11px; }
 .pause-icon i { display: block; width: 2px; height: 11px; background: currentColor; }
 
@@ -158,7 +160,7 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
   .wordmark { min-width: 0; }
   .flight-status { margin-right: 12px; font-size: 8px; }
   .flight-actions { gap: 6px; }
-  .pause-button, .reset-button { height: 33px; padding: 0 9px; font-size: 8px; }
+  .boost-button, .pause-button, .reset-button { height: 33px; padding: 0 9px; font-size: 8px; }
   .view-title { top: 22%; left: 25px; }
   .view-title h1 { font-size: 61px; }
   .location-line { gap: 7px; margin-bottom: 13px; font-size: 8px; }
@@ -174,6 +176,7 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 }
 
 @media (max-width: 390px) {
+  .wordmark-copy small, .reset-button { display: none; }
   .wordmark-copy small { font-size: 7px; }
   .flight-status { display: none; }
   .view-title { top: 25%; }

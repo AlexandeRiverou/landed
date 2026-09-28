@@ -8,15 +8,17 @@ export interface FlightState {
   pitch: number
   bank: number
   speed: number
+  boost: number
 }
 
 export interface FlightControls {
   roll: number
   pitch: number
+  boost: boolean
 }
 
 export function createFlightState(): FlightState {
-  return { x: 0, y: 1320, z: 0, heading: 0, pitch: 0, bank: 0, speed: 52 }
+  return { x: 0, y: 1320, z: 0, heading: 0, pitch: 0, bank: 0, speed: 52, boost: 0 }
 }
 
 export function stepFlight(state: FlightState, controls: FlightControls, elapsed: number): void {
@@ -26,6 +28,8 @@ export function stepFlight(state: FlightState, controls: FlightControls, elapsed
 
   state.bank += (roll * 0.58 - state.bank) * Math.min(1, delta * 2.8)
   state.pitch += (pitch * 0.2 - state.pitch) * Math.min(1, delta * 2.1)
+  state.boost += ((controls.boost ? 1 : 0) - state.boost) * Math.min(1, delta * 3.6)
+  state.speed = 52 + state.boost * 68
   state.heading -= state.bank * 0.42 * delta
   state.x -= Math.sin(state.heading) * state.speed * delta
   state.z -= Math.cos(state.heading) * state.speed * delta

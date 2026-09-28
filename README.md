@@ -1,6 +1,6 @@
-# Aerie
+# landed
 
-A calm, browser-based glider game. Explore a procedurally generated open landscape, steer with gentle turns, and watch the terrain unfold beneath you. Runs on Linux and Windows in a modern browser with WebGL.
+A calm, browser-based glider game. Cruise through procedurally generated mountains, forests, rivers, and lakes, with grassland, earth, rock, and snow biomes. Runs on Linux and Windows in a modern browser with WebGL.
 
 ## Run locally
 
@@ -11,7 +11,7 @@ npm install
 npm run dev
 ```
 
-Open the local URL printed by Vite. Use `W` / `Up` to climb, `S` / `Down` to descend, and `A` / `Left` or `D` / `Right` to bank. `P` pauses and `R` resets the flight. Touch controls are available on touch screens.
+Open the local URL printed by Vite. Use `W` / `Up` to climb, `S` / `Down` to descend, and `A` / `Left` or `D` / `Right` to bank. Hold `Shift` or `Space` to boost. `P` pauses and `R` resets the flight. The on-screen boost button also supports press-and-hold; flight controls are available on touch screens.
 
 ## Verify and build
 

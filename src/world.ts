@@ -23,12 +23,12 @@ function smoothstep(edge0: number, edge1: number, value: number): number {
 }
 
 function rawTerrainHeight(x: number, z: number): number {
-  const broad = noise(x * 0.00016, z * 0.00016) * 195
-  const foothills = noise(x * 0.00035, z * 0.00035) * 90
-  const ridgeShape = 1 - Math.abs(noise(x * 0.00062, z * 0.00062) * 2 - 1)
-  const ridges = ridgeShape ** 2 * 500
-  const detail = noise(x * 0.0024, z * 0.0024) * 28
-  return 55 + broad + foothills + ridges + detail
+  const broad = noise(x * 0.00008, z * 0.00008) * 170
+  const foothills = noise(x * 0.00022, z * 0.00022) * 110
+  const ridgeShape = 1 - Math.abs(noise(x * 0.00058, z * 0.00058) * 2 - 1)
+  const ridges = ridgeShape ** 1.7 * 720
+  const detail = noise(x * 0.0024, z * 0.0024) * 36
+  return 35 + broad + foothills + ridges + detail
 }
 
 export interface WaterSample {
@@ -81,11 +81,12 @@ export interface TreePosition {
   height: number
   scale: number
   rotation: number
+  kind: 'pine' | 'broadleaf'
 }
 
 export function generateForest(centerX: number, centerZ: number, maximum = 1600): TreePosition[] {
   const trees: TreePosition[] = []
-  const spacing = 96
+  const spacing = 76
   const halfSize = 3000
   const startX = Math.floor((centerX - halfSize) / spacing)
   const endX = Math.floor((centerX + halfSize) / spacing)
@@ -96,24 +97,64 @@ export function generateForest(centerX: number, centerZ: number, maximum = 1600)
     for (let cellZ = startZ; cellZ <= endZ && trees.length < maximum; cellZ += 1) {
       const x = (cellX + 0.12 + hash(cellX + 129.8, cellZ + 17.3) * 0.76) * spacing
       const z = (cellZ + 0.12 + hash(cellX + 43.6, cellZ + 341.2) * 0.76) * spacing
-      if (noise(x * 0.00048, z * 0.00048) < 0.5 || hash(cellX + 73.4, cellZ + 918.7) < 0.58) continue
+      if (noise(x * 0.00048, z * 0.00048) < 0.43 || hash(cellX + 73.4, cellZ + 918.7) < 0.47) continue
 
       const height = terrainHeight(x, z)
-      if (height < 140 || height > 520 || waterCoverage(x, z) > 0.05) continue
+      if (height < 130 || height > 600 || waterCoverage(x, z) > 0.05) continue
 
       const slope = Math.abs(terrainHeight(x + 18, z) - terrainHeight(x - 18, z))
         + Math.abs(terrainHeight(x, z + 18) - terrainHeight(x, z - 18))
-      if (slope > 54) continue
+      if (slope > 60) continue
 
       trees.push({
         x,
         z,
         height,
-        scale: 0.7 + hash(cellX + 12.2, cellZ + 451.8) * 0.85,
+        scale: 0.65 + hash(cellX + 12.2, cellZ + 451.8) * 1.0,
         rotation: hash(cellX + 421.7, cellZ + 92.3) * Math.PI * 2,
+        kind: hash(cellX + 201.2, cellZ + 88.7) < 0.22 ? 'broadleaf' : 'pine',
       })
     }
   }
 
   return trees
+}
+
+export interface RockPosition {
+  x: number
+  z: number
+  height: number
+  scale: number
+  rotation: number
+}
+
+export function generateRockField(centerX: number, centerZ: number, maximum = 420): RockPosition[] {
+  const rocks: RockPosition[] = []
+  const spacing = 148
+  const halfSize = 3000
+  const startX = Math.floor((centerX - halfSize) / spacing)
+  const endX = Math.floor((centerX + halfSize) / spacing)
+  const startZ = Math.floor((centerZ - halfSize) / spacing)
+  const endZ = Math.floor((centerZ + halfSize) / spacing)
+
+  for (let cellX = startX; cellX <= endX && rocks.length < maximum; cellX += 1) {
+    for (let cellZ = startZ; cellZ <= endZ && rocks.length < maximum; cellZ += 1) {
+      const x = (cellX + 0.16 + hash(cellX + 73.8, cellZ + 91.3) * 0.68) * spacing
+      const z = (cellZ + 0.16 + hash(cellX + 37.5, cellZ + 128.6) * 0.68) * spacing
+      if (noise(x * 0.0008, z * 0.0008) < 0.56 || hash(cellX + 344.9, cellZ + 54.1) < 0.38) continue
+
+      const height = terrainHeight(x, z)
+      if (height < 520 || height > 1050 || waterCoverage(x, z) > 0.05) continue
+
+      rocks.push({
+        x,
+        z,
+        height,
+        scale: 0.6 + hash(cellX + 515.2, cellZ + 36.3) * 1.4,
+        rotation: hash(cellX + 201.8, cellZ + 19.6) * Math.PI * 2,
+      })
+    }
+  }
+
+  return rocks
 }

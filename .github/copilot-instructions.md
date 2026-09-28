@@ -1,4 +1,4 @@
-# Aerie project guidance
+# landed project guidance
 
 - This is a browser-based, cross-platform Three.js flight game. Keep the first screen inside the playable world; avoid adding a landing page or blocking start flow.
 - Keep flight simulation and deterministic procedural terrain in `src/flight.ts` and `src/world.ts`, separate from rendering in `src/main.ts`.

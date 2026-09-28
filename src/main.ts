@@ -1,7 +1,7 @@
 import './style.css'
 import * as THREE from 'three'
 import { createFlightState, stepFlight } from './flight'
-import { generateForest, terrainHeight } from './world'
+import { generateForest, generateRockField, terrainHeight } from './world'
 
 const app = document.querySelector<HTMLDivElement>('#app')!
 
@@ -16,6 +16,7 @@ app.innerHTML = `
       </a>
       <div class="flight-status"><span class="status-light"></span><span>IN THE AIR</span></div>
       <div class="flight-actions">
+        <button class="boost-button" id="boost-button" type="button" aria-label="Hold to boost" aria-pressed="false">BOOST</button>
         <button class="reset-button" id="reset-flight" type="button">RESET</button>
         <button class="pause-button" id="pause-button" type="button" aria-label="Pause flight">
           <span class="pause-icon" aria-hidden="true"><i></i><i></i></span>
@@ -58,6 +59,7 @@ app.innerHTML = `
 const worldRoot = document.querySelector<HTMLDivElement>('#world')!
 const errorMessage = document.querySelector<HTMLDivElement>('#render-error')!
 const pauseButton = document.querySelector<HTMLButtonElement>('#pause-button')!
+const boostButton = document.querySelector<HTMLButtonElement>('#boost-button')!
 const pauseLabel = document.querySelector<HTMLSpanElement>('#pause-label')!
 const pauseShade = document.querySelector<HTMLDivElement>('#pause-shade')!
 const altitudeReadout = document.querySelector<HTMLSpanElement>('#altitude')!
@@ -129,6 +131,7 @@ const terrainMaterial = new THREE.ShaderMaterial({
     uniform vec2 uOffset;
     varying float vHeight;
     varying float vWater;
+    varying float vVariation;
     varying vec3 vNormal;
     varying vec2 vLocal;
 
@@ -145,12 +148,12 @@ const terrainMaterial = new THREE.ShaderMaterial({
     }
 
     float relief(vec2 p) {
-      float broad = noise(p * 0.00016) * 195.0;
-      float foothills = noise(p * 0.00035) * 90.0;
-      float ridgeShape = 1.0 - abs(noise(p * 0.00062) * 2.0 - 1.0);
-      float ridges = ridgeShape * ridgeShape * 500.0;
-      float detail = noise(p * 0.0024) * 28.0;
-      return 55.0 + broad + foothills + ridges + detail;
+      float broad = noise(p * 0.00008) * 170.0;
+      float foothills = noise(p * 0.00022) * 110.0;
+      float ridgeShape = 1.0 - abs(noise(p * 0.00058) * 2.0 - 1.0);
+      float ridges = pow(ridgeShape, 1.7) * 720.0;
+      float detail = noise(p * 0.0024) * 36.0;
+      return 35.0 + broad + foothills + ridges + detail;
     }
 
     float waterAt(vec2 point, out float waterLevel) {
@@ -191,6 +194,7 @@ const terrainMaterial = new THREE.ShaderMaterial({
       float up = relief(point + vec2(0.0, 5.0));
       vHeight = height;
       vWater = water;
+      vVariation = noise(point * 0.0014);
       vNormal = normalize(vec3(left - right, 10.0, down - up));
       vec3 displaced = position;
       displaced.y = height;
@@ -200,20 +204,22 @@ const terrainMaterial = new THREE.ShaderMaterial({
   fragmentShader: `
     varying float vHeight;
     varying float vWater;
+    varying float vVariation;
     varying vec3 vNormal;
     varying vec2 vLocal;
     void main() {
-      vec3 foothills = vec3(0.19, 0.34, 0.27);
-      vec3 highland = vec3(0.35, 0.40, 0.32);
-      vec3 stone = vec3(0.53, 0.51, 0.43);
-      vec3 summit = vec3(0.80, 0.82, 0.75);
-      vec3 ground = mix(foothills, highland, smoothstep(180.0, 400.0, vHeight));
-      ground = mix(ground, stone, smoothstep(390.0, 590.0, vHeight));
-      ground = mix(ground, summit, smoothstep(620.0, 745.0, vHeight));
+      vec3 grass = mix(vec3(0.075, 0.19, 0.055), vec3(0.22, 0.36, 0.10), vVariation);
+      vec3 soil = vec3(0.39, 0.21, 0.10);
+      vec3 rock = vec3(0.36, 0.34, 0.29);
+      vec3 snow = vec3(0.88, 0.91, 0.89);
+      float exposedSoil = smoothstep(310.0, 540.0, vHeight) * (0.55 + vVariation * 0.45);
+      vec3 ground = mix(grass, soil, exposedSoil);
+      ground = mix(ground, rock, smoothstep(500.0, 710.0, vHeight));
+      ground = mix(ground, snow, smoothstep(760.0, 940.0, vHeight));
       float ripple = 0.5 + 0.5 * sin(vLocal.x * 0.003 + sin(vLocal.y * 0.002) * 2.0);
       vec3 water = mix(vec3(0.055, 0.25, 0.29), vec3(0.28, 0.55, 0.54), smoothstep(0.56, 0.98, ripple));
       ground = mix(ground, water, smoothstep(0.12, 0.8, vWater));
-      float light = 0.63 + 0.48 * max(dot(normalize(vNormal), normalize(vec3(-0.36, 0.86, 0.37))), 0.0);
+      float light = 0.42 + 0.78 * max(dot(normalize(vNormal), normalize(vec3(-0.36, 0.86, 0.37))), 0.0);
       ground *= light;
       float haze = smoothstep(3400.0, 6100.0, length(vLocal));
       ground = mix(ground, vec3(0.70, 0.81, 0.78), haze * 0.82);
@@ -229,7 +235,7 @@ const terrain = new THREE.Mesh(terrainGeometry, terrainMaterial)
 terrain.frustumCulled = false
 scene.add(terrain)
 
-const treeCapacity = 1600
+const treeCapacity = 2400
 const forestTrunks = new THREE.InstancedMesh(
   new THREE.CylinderGeometry(1.1, 0.68, 10, 6),
   new THREE.MeshStandardMaterial({ color: 0x725a43, roughness: 0.96, flatShading: true }),
@@ -240,7 +246,18 @@ const forestCrowns = new THREE.InstancedMesh(
   new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.94, flatShading: true }),
   treeCapacity,
 )
-scene.add(forestTrunks, forestCrowns)
+const forestBroadleaf = new THREE.InstancedMesh(
+  new THREE.IcosahedronGeometry(7, 1),
+  new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.94, flatShading: true }),
+  treeCapacity,
+)
+const rockCapacity = 420
+const rockOutcrops = new THREE.InstancedMesh(
+  new THREE.DodecahedronGeometry(8, 0),
+  new THREE.MeshStandardMaterial({ color: 0x81796d, roughness: 1, flatShading: true }),
+  rockCapacity,
+)
+scene.add(forestTrunks, forestCrowns, forestBroadleaf, rockOutcrops)
 
 const glider = new THREE.Group()
 const ivory = new THREE.MeshStandardMaterial({ color: 0xe9e3d2, roughness: 0.58, metalness: 0.08, flatShading: true })
@@ -301,6 +318,8 @@ function updateForest(): void {
   forestRegionZ = regionZ
 
   const trees = generateForest(regionX * 6000, regionZ * 6000, treeCapacity)
+  let pineCount = 0
+  let broadleafCount = 0
   trees.forEach((tree, index) => {
     treeTransform.position.set(tree.x, tree.height + tree.scale * 5, tree.z)
     treeTransform.rotation.set(0, tree.rotation, 0)
@@ -308,19 +327,48 @@ function updateForest(): void {
     treeTransform.updateMatrix()
     forestTrunks.setMatrixAt(index, treeTransform.matrix)
 
-    treeTransform.position.y = tree.height + tree.scale * 19
+    if (tree.kind === 'pine') {
+      treeTransform.position.y = tree.height + tree.scale * 19
+      treeTransform.updateMatrix()
+      forestCrowns.setMatrixAt(pineCount, treeTransform.matrix)
+      foliageColor.setHSL(0.27 + (tree.scale - 0.65) * 0.018, 0.31, 0.23 + (tree.scale - 0.65) * 0.05)
+      forestCrowns.setColorAt(pineCount, foliageColor)
+      pineCount += 1
+    } else {
+      treeTransform.position.y = tree.height + tree.scale * 17
+      treeTransform.scale.set(tree.scale * 1.5, tree.scale * 1.1, tree.scale * 1.35)
+      treeTransform.updateMatrix()
+      forestBroadleaf.setMatrixAt(broadleafCount, treeTransform.matrix)
+      foliageColor.setHSL(0.29 + (tree.scale - 0.65) * 0.018, 0.39, 0.27 + (tree.scale - 0.65) * 0.05)
+      forestBroadleaf.setColorAt(broadleafCount, foliageColor)
+      broadleafCount += 1
+    }
+  })
+  const rocks = generateRockField(regionX * 6000, regionZ * 6000, rockCapacity)
+  rocks.forEach((rock, index) => {
+    treeTransform.position.set(rock.x, rock.height + rock.scale * 5, rock.z)
+    treeTransform.rotation.set(rock.rotation * 0.25, rock.rotation, rock.rotation * 0.18)
+    treeTransform.scale.set(rock.scale * 1.25, rock.scale * 0.72, rock.scale)
     treeTransform.updateMatrix()
-    forestCrowns.setMatrixAt(index, treeTransform.matrix)
-    foliageColor.setHSL(0.27 + (tree.scale - 0.7) * 0.025, 0.31, 0.25 + (tree.scale - 0.7) * 0.065)
-    forestCrowns.setColorAt(index, foliageColor)
+    rockOutcrops.setMatrixAt(index, treeTransform.matrix)
+    foliageColor.setHSL(0.1, 0.08, 0.32 + rock.scale * 0.055)
+    rockOutcrops.setColorAt(index, foliageColor)
   })
   forestTrunks.count = trees.length
-  forestCrowns.count = trees.length
+  forestCrowns.count = pineCount
+  forestBroadleaf.count = broadleafCount
+  rockOutcrops.count = rocks.length
   forestTrunks.instanceMatrix.needsUpdate = true
   forestCrowns.instanceMatrix.needsUpdate = true
+  forestBroadleaf.instanceMatrix.needsUpdate = true
+  rockOutcrops.instanceMatrix.needsUpdate = true
   if (forestCrowns.instanceColor) forestCrowns.instanceColor.needsUpdate = true
+  if (forestBroadleaf.instanceColor) forestBroadleaf.instanceColor.needsUpdate = true
+  if (rockOutcrops.instanceColor) rockOutcrops.instanceColor.needsUpdate = true
   forestTrunks.computeBoundingSphere()
   forestCrowns.computeBoundingSphere()
+  forestBroadleaf.computeBoundingSphere()
+  rockOutcrops.computeBoundingSphere()
 }
 
 updateForest()
@@ -350,6 +398,7 @@ const clouds = Array.from({ length: 30 }, createCloud)
 const pressedKeys = new Set<string>()
 let touchRoll = 0
 let touchPitch = 0
+let touchBoost = false
 let paused = false
 
 function controlValue(negative: string[], positive: string[], touch: number): number {
@@ -373,6 +422,15 @@ function resetFlight(): void {
 
 pauseButton.addEventListener('click', () => setPaused(!paused))
 document.querySelector<HTMLButtonElement>('#reset-flight')!.addEventListener('click', resetFlight)
+boostButton.addEventListener('pointerdown', (event) => {
+  event.preventDefault()
+  boostButton.setPointerCapture(event.pointerId)
+  touchBoost = true
+})
+const releaseBoost = () => { touchBoost = false }
+boostButton.addEventListener('pointerup', releaseBoost)
+boostButton.addEventListener('pointercancel', releaseBoost)
+boostButton.addEventListener('lostpointercapture', releaseBoost)
 
 const touchButtons: Array<[string, number, number]> = [
   ['bank-left', -1, 0],
@@ -400,7 +458,8 @@ for (const [id, roll, pitch] of touchButtons) {
 
 window.addEventListener('keydown', (event) => {
   const controls = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'KeyA', 'KeyD', 'KeyW', 'KeyS']
-  if (controls.includes(event.code)) {
+  const boostControls = ['Space', 'ShiftLeft', 'ShiftRight']
+  if (controls.includes(event.code) || boostControls.includes(event.code)) {
     event.preventDefault()
     pressedKeys.add(event.code)
   }
@@ -412,6 +471,7 @@ window.addEventListener('blur', () => {
   pressedKeys.clear()
   touchRoll = 0
   touchPitch = 0
+  touchBoost = false
 })
 
 function updateReadouts(): void {
@@ -423,6 +483,10 @@ function updateReadouts(): void {
   const northing = Math.round(36 + flight.z / 11000)
   const easting = Math.round(118 + flight.x / 11000)
   coordinatesReadout.textContent = `${northing} 12 N\u00a0\u00a0 ${easting} 41 W`
+  const boostHeld = touchBoost || pressedKeys.has('Space') || pressedKeys.has('ShiftLeft') || pressedKeys.has('ShiftRight')
+  boostButton.setAttribute('aria-pressed', boostHeld.toString())
+  boostButton.classList.toggle('is-active', flight.boost > 0.15)
+  document.querySelector('.flight-status span:last-child')!.textContent = paused ? 'PAUSED' : flight.boost > 0.5 ? 'BOOSTING' : 'IN THE AIR'
 }
 
 let previousFrame = performance.now()
@@ -434,6 +498,7 @@ function render(now: number): void {
     stepFlight(flight, {
       roll: controlValue(['ArrowLeft', 'KeyA'], ['ArrowRight', 'KeyD'], touchRoll),
       pitch: controlValue(['ArrowDown', 'KeyS'], ['ArrowUp', 'KeyW'], touchPitch),
+      boost: touchBoost || pressedKeys.has('Space') || pressedKeys.has('ShiftLeft') || pressedKeys.has('ShiftRight'),
     }, delta)
   }
 

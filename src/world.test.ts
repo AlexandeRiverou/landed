@@ -1,6 +1,6 @@
 import * as assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { generateForest, terrainHeight, waterCoverage } from './world'
+import { generateForest, generateRockField, terrainHeight, waterCoverage } from './world'
 
 describe('terrainHeight', () => {
   it('is deterministic for the same world position', () => {
@@ -10,8 +10,8 @@ describe('terrainHeight', () => {
   it('produces finite, varied terrain within the expected elevation range', () => {
     const heights = Array.from({ length: 40 }, (_, index) => terrainHeight(index * 180, index * -97))
     assert.ok(heights.every(Number.isFinite))
-    assert.ok(Math.min(...heights) >= 55)
-    assert.ok(Math.max(...heights) <= 868)
+    assert.ok(Math.min(...heights) >= 35)
+    assert.ok(Math.max(...heights) <= 1080)
     assert.ok(Math.max(...heights) - Math.min(...heights) > 30)
   })
 
@@ -42,7 +42,15 @@ describe('terrainHeight', () => {
     const forest = generateForest(0, 0, 400)
     assert.deepEqual(forest, generateForest(0, 0, 400))
     assert.ok(forest.length > 40)
-    assert.ok(forest.every((tree) => tree.height >= 140 && tree.height <= 520))
+    assert.ok(forest.every((tree) => tree.height >= 130 && tree.height <= 600))
     assert.ok(forest.every((tree) => waterCoverage(tree.x, tree.z) <= 0.05))
+    assert.ok(new Set(forest.map((tree) => tree.kind)).size > 1)
+  })
+
+  it('scatters repeatable rock outcrops across high ground', () => {
+    const rocks = generateRockField(0, 0, 320)
+    assert.deepEqual(rocks, generateRockField(0, 0, 320))
+    assert.ok(rocks.length > 8)
+    assert.ok(rocks.every((rock) => rock.height >= 520 && waterCoverage(rock.x, rock.z) <= 0.05))
   })
 })
