@@ -5,7 +5,9 @@ import {
   generateCannons,
   generateForest,
   generateRockField,
+  generateSettlement,
   highestTerrainAlongPath,
+  setWorldSeed,
   terrainGridOrigin,
   terrainHeight,
   terrainNormalAt,
@@ -15,6 +17,18 @@ import {
 describe('terrainHeight', () => {
   it('is deterministic for the same world position', () => {
     assert.equal(terrainHeight(128.5, -920.25), terrainHeight(128.5, -920.25))
+  })
+
+  it('changes terrain between world seeds while remaining repeatable per seed', () => {
+    try {
+      setWorldSeed(12345)
+      const firstSeedHeight = terrainHeight(1732, -2841)
+      assert.equal(firstSeedHeight, terrainHeight(1732, -2841))
+      setWorldSeed(98765)
+      assert.notEqual(firstSeedHeight, terrainHeight(1732, -2841))
+    } finally {
+      setWorldSeed(0x4c414e44)
+    }
   })
 
   it('produces finite, varied terrain within the expected elevation range', () => {
@@ -93,12 +107,25 @@ describe('terrainHeight', () => {
     assert.ok(cannons.every((cannon) => cannon.height >= 780 && waterCoverage(cannon.x, cannon.z) <= 0.05))
   })
 
+  it('generates repeatable road, building, and car layouts on dry lowlands', () => {
+    const settlement = generateSettlement(0, 0)
+    assert.deepEqual(settlement, generateSettlement(0, 0))
+    assert.ok(settlement.roads.length > 12)
+    assert.ok(settlement.buildings.length > 8)
+    assert.ok(settlement.cars.length > 2)
+    assert.ok(settlement.roads.every((road) => road.height < 760 && waterCoverage(road.x, road.z) < 0.04))
+    assert.ok(settlement.buildings.every((building) => building.height < 700 && waterCoverage(building.x, building.z) < 0.04))
+    assert.ok(settlement.cars.every((car) => waterCoverage(car.x, car.z) < 0.04))
+  })
+
   it('spawns deterministic flying traffic clear of terrain', () => {
-    const traffic = generateFlyingThings(0, 0, 12)
-    assert.deepEqual(traffic, generateFlyingThings(0, 0, 12))
+    const traffic = generateFlyingThings(0, 0, 20)
+    assert.deepEqual(traffic, generateFlyingThings(0, 0, 20))
     assert.ok(traffic.some((thing) => thing.kind === 'birds'))
     assert.ok(traffic.some((thing) => thing.kind === 'airplane'))
     assert.ok(traffic.some((thing) => thing.kind === 'balloon'))
+    assert.ok(traffic.some((thing) => thing.kind === 'kite'))
+    assert.ok(traffic.some((thing) => thing.kind === 'glider'))
     assert.ok(traffic.every((thing) => thing.y > terrainHeight(thing.x, thing.z)))
   })
 })

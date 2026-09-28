@@ -1,5 +1,21 @@
+const DEFAULT_WORLD_SEED = 0x4c414e44
+let worldSeed = DEFAULT_WORLD_SEED
+
+export function createWorldSeed(): number {
+  const values = new Uint32Array(1)
+  if (globalThis.crypto?.getRandomValues) globalThis.crypto.getRandomValues(values)
+  else values[0] = Math.floor(Math.random() * 0x1_0000_0000)
+  return values[0]
+}
+
+export function setWorldSeed(seed: number): void {
+  worldSeed = seed >>> 0
+}
+
 function hash(x: number, z: number): number {
-  const value = Math.sin(x * 127.1 + z * 311.7) * 43758.5453
+  const offsetX = (worldSeed & 0xffff) * 0.0137
+  const offsetZ = (worldSeed >>> 16) * 0.0171
+  const value = Math.sin((x + offsetX) * 127.1 + (z + offsetZ) * 311.7) * 43758.5453
   return value - Math.floor(value)
 }
 
@@ -107,7 +123,7 @@ export function highestTerrainAlongPath(startX: number, startZ: number, endX: nu
   return highest
 }
 
-export type FlyingThingKind = 'birds' | 'airplane' | 'balloon'
+export type FlyingThingKind = 'birds' | 'airplane' | 'balloon' | 'kite' | 'glider'
 
 export interface FlyingThingSpawn {
   x: number
@@ -124,9 +140,17 @@ export function generateFlyingThings(centerX: number, centerZ: number, count = 8
     const seed = index + 1
     const x = centerX + (hash(seed + centerX * 0.013, centerZ * 0.017 + 31.7) - 0.5) * 7600
     const z = centerZ - 1600 - hash(seed + centerZ * 0.011, centerX * 0.019 + 69.3) * 8200
-    const kind: FlyingThingKind = index % 7 === 5 ? 'balloon' : index % 3 === 0 ? 'airplane' : 'birds'
-    const clearance = kind === 'balloon' ? 850 : kind === 'airplane' ? 550 : 300
-    const speed = kind === 'balloon' ? 7 : kind === 'airplane' ? 74 : 28
+    const kind: FlyingThingKind = index % 11 === 8
+      ? 'balloon'
+      : index % 7 === 4
+        ? 'kite'
+        : index % 5 === 2
+          ? 'glider'
+          : index % 3 === 0
+            ? 'airplane'
+            : 'birds'
+    const clearance = kind === 'balloon' ? 850 : kind === 'airplane' ? 550 : kind === 'kite' ? 620 : kind === 'glider' ? 480 : 300
+    const speed = kind === 'balloon' ? 7 : kind === 'kite' ? 20 : kind === 'glider' ? 58 : kind === 'airplane' ? 74 : 28
 
     return {
       x,
@@ -264,4 +288,126 @@ export function generateCannons(centerX: number, centerZ: number, maximum = 12):
   }
 
   return cannons
+}
+
+export interface SettlementRoad {
+  x: number
+  z: number
+  height: number
+  rotation: number
+  length: number
+  width: number
+}
+
+export interface BuildingSite {
+  x: number
+  z: number
+  height: number
+  scale: number
+  rotation: number
+  kind: 'cottage' | 'house' | 'shop' | 'barn'
+}
+
+export interface RoadCarSite {
+  x: number
+  z: number
+  height: number
+  rotation: number
+  phase: number
+  speed: number
+  color: number
+}
+
+export interface SettlementLayout {
+  centerX: number
+  centerZ: number
+  rotation: number
+  roads: SettlementRoad[]
+  buildings: BuildingSite[]
+  cars: RoadCarSite[]
+}
+
+export function generateSettlement(centerX: number, centerZ: number): SettlementLayout {
+  let townX = centerX
+  let townZ = centerZ
+  for (let candidate = 0; candidate < 100; candidate += 1) {
+    const x = centerX + (hash(candidate + centerX * 0.007, centerZ * 0.011 + 701.3) - 0.5) * 5200
+    const z = centerZ + (hash(candidate + centerZ * 0.009, centerX * 0.013 + 119.6) - 0.5) * 5200
+    const normal = terrainNormalAt(x, z)
+    if (terrainHeight(x, z) < 680 && waterCoverage(x, z) < 0.04 && normal.y > 0.91) {
+      townX = x
+      townZ = z
+      break
+    }
+  }
+
+  const rotation = (hash(townX * 0.013 + 83.7, townZ * 0.017 + 209.4) - 0.5) * Math.PI * 0.4
+  const toWorld = (localX: number, localZ: number) => ({
+    x: townX + localX * Math.cos(rotation) + localZ * Math.sin(rotation),
+    z: townZ - localX * Math.sin(rotation) + localZ * Math.cos(rotation),
+  })
+  const roads: SettlementRoad[] = []
+  const roadLength = 120
+  const roadWidth = 15
+
+  const addStreet = (localX: number, localZ: number, angle: number) => {
+    const position = toWorld(localX, localZ)
+    const halfLength = roadLength * 0.48
+    const xA = position.x - Math.cos(angle) * halfLength
+    const zA = position.z + Math.sin(angle) * halfLength
+    const xB = position.x + Math.cos(angle) * halfLength
+    const zB = position.z - Math.sin(angle) * halfLength
+    const startHeight = terrainHeight(xA, zA)
+    const endHeight = terrainHeight(xB, zB)
+    const height = terrainHeight(position.x, position.z)
+    if (height > 760 || waterCoverage(position.x, position.z) > 0.04 || Math.abs(startHeight - endHeight) > 28) return
+    roads.push({ x: position.x, z: position.z, height, rotation: angle, length: roadLength, width: roadWidth })
+  }
+
+  for (const streetZ of [-300, -150, 0, 150, 300]) {
+    for (let streetX = -360; streetX <= 360; streetX += roadLength) addStreet(streetX, streetZ, rotation)
+  }
+  for (const streetX of [-300, -150, 0, 150, 300]) {
+    for (let streetZ = -360; streetZ <= 360; streetZ += roadLength) addStreet(streetX, streetZ, rotation + Math.PI / 2)
+  }
+
+  const buildings: BuildingSite[] = []
+  const buildingKinds: BuildingSite['kind'][] = ['cottage', 'house', 'shop', 'barn']
+  for (let localZ = -390; localZ <= 390; localZ += 130) {
+    for (let localX = -390; localX <= 390; localX += 130) {
+      if (hash(localX + townX * 0.01, localZ + townZ * 0.01) < 0.42) continue
+      const position = toWorld(localX + (hash(localX + 43.5, localZ + 87.2) - 0.5) * 32, localZ)
+      const height = terrainHeight(position.x, position.z)
+      const normal = terrainNormalAt(position.x, position.z)
+      if (height > 700 || normal.y < 0.86 || waterCoverage(position.x, position.z) > 0.04) continue
+      const variant = Math.floor(hash(localX + townX * 0.013 + 12.7, localZ + townZ * 0.015 + 5.8) * buildingKinds.length)
+      buildings.push({
+        x: position.x,
+        z: position.z,
+        height,
+        scale: 0.7 + hash(localX + 19.3, localZ + 61.8) * 0.7,
+        rotation: rotation + (hash(localX + 711.1, localZ + 32.4) - 0.5) * 0.22,
+        kind: buildingKinds[variant],
+      })
+    }
+  }
+
+  const cars: RoadCarSite[] = []
+  for (let index = 0; index < 8; index += 1) {
+    const localX = -315 + index * 90
+    const position = toWorld(localX, -7 + (index % 2) * 14)
+    const height = terrainHeight(position.x, position.z)
+    if (waterCoverage(position.x, position.z) > 0.04 || height > 760) continue
+    cars.push({
+      x: position.x,
+      z: position.z,
+      height,
+      rotation: rotation + Math.PI / 2,
+      phase: hash(index + townX * 0.03, townZ * 0.02 + 33.3),
+      speed: 12 + hash(index + townZ * 0.017, townX * 0.021 + 16.9) * 22,
+      color: [0xc7543f, 0x477b8f, 0xd2a74f, 0x455b49][Math.floor(hash(index + 319.5, townX * 0.001 + townZ) * 4)],
+    })
+  }
+
+  return { centerX: townX, centerZ: townZ, rotation, roads, buildings, cars }
 }

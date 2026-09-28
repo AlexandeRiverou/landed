@@ -1,8 +1,12 @@
-import './style.css'
 import * as THREE from 'three'
+import './style.css'
 import { createFlightState, stepFlight } from './flight'
 import { createFieldNote, fieldNoteBearing, fieldNoteDistance, fieldNoteProgress, reachedFieldNote, type FieldNote } from './objectives'
-import { generateCannons, generateFlyingThings, generateForest, generateRockField, terrainGridOrigin, terrainHeight, terrainNormalAt, waterCoverage } from './world'
+import { worldEventForObjective, type WorldEvent } from './world-events'
+import { createWorldSeed, generateCannons, generateFlyingThings, generateForest, generateRockField, generateSettlement, setWorldSeed, terrainGridOrigin, terrainHeight, terrainNormalAt, waterCoverage } from './world'
+
+const worldSeed = createWorldSeed()
+setWorldSeed(worldSeed)
 
 const app = document.querySelector<HTMLDivElement>('#app')!
 
@@ -110,17 +114,38 @@ worldRoot.append(renderer.domElement)
 
 const scene = new THREE.Scene()
 const camera = new THREE.PerspectiveCamera(47, window.innerWidth / window.innerHeight, 1, 15000)
-scene.add(new THREE.HemisphereLight(0xe5f4ed, 0x40594e, 2.05))
+const hemisphereLight = new THREE.HemisphereLight(0xe5f4ed, 0x40594e, 2.05)
+scene.add(hemisphereLight)
 
 const sunDirection = new THREE.Vector3(0.37, 0.62, -0.69).normalize()
+const moonAzimuth = ((worldSeed & 0xffff) / 0x10000) * Math.PI * 2
+const moonElevation = 0.34 + ((worldSeed >>> 16) / 0x10000) * 0.38
+const moonDirection = new THREE.Vector3(
+  Math.cos(moonAzimuth) * Math.cos(moonElevation),
+  Math.sin(moonElevation),
+  -Math.sin(moonAzimuth) * Math.cos(moonElevation),
+).normalize()
 const sunlight = new THREE.DirectionalLight(0xffe4b7, 2.2)
 sunlight.position.copy(sunDirection).multiplyScalar(5000)
 scene.add(sunlight)
+const moon = new THREE.Mesh(
+  new THREE.SphereGeometry(260, 24, 16),
+  new THREE.MeshBasicMaterial({ color: 0xf3e9ca, toneMapped: false }),
+)
+moon.visible = false
+scene.add(moon)
 
 const skyMaterial = new THREE.ShaderMaterial({
   side: THREE.BackSide,
   depthWrite: false,
-  uniforms: { uSunDirection: { value: sunDirection } },
+  uniforms: {
+    uSunDirection: { value: sunDirection },
+    uSkyTop: { value: new THREE.Color().setRGB(0.16, 0.43, 0.53) },
+    uSkyHorizon: { value: new THREE.Color().setRGB(0.72, 0.79, 0.74) },
+    uNight: { value: 0 },
+    uStorm: { value: 0 },
+    uAurora: { value: 0 },
+  },
   vertexShader: `
     varying vec3 vDirection;
     void main() {
@@ -130,14 +155,29 @@ const skyMaterial = new THREE.ShaderMaterial({
   `,
   fragmentShader: `
     uniform vec3 uSunDirection;
+    uniform vec3 uSkyTop;
+    uniform vec3 uSkyHorizon;
+    uniform float uNight;
+    uniform float uStorm;
+    uniform float uAurora;
     varying vec3 vDirection;
     void main() {
       vec3 direction = normalize(vDirection);
       float horizon = smoothstep(-0.12, 0.82, direction.y);
-      vec3 sky = mix(vec3(0.72, 0.79, 0.74), vec3(0.16, 0.43, 0.53), horizon);
+      vec3 daySky = mix(uSkyHorizon, uSkyTop, horizon);
+      vec3 nightSky = mix(vec3(0.012, 0.018, 0.055), vec3(0.065, 0.12, 0.25), horizon);
+      vec3 sky = mix(daySky, nightSky, uNight);
       float sun = max(dot(direction, normalize(uSunDirection)), 0.0);
-      sky += vec3(1.0, 0.63, 0.34) * pow(sun, 160.0) * 1.1;
-      sky += vec3(1.0, 0.74, 0.48) * pow(sun, 13.0) * 0.14;
+      sky += vec3(1.0, 0.63, 0.34) * pow(sun, 160.0) * 1.1 * (1.0 - uNight);
+      sky += vec3(1.0, 0.74, 0.48) * pow(sun, 13.0) * 0.14 * (1.0 - uNight);
+      vec3 starCell = floor(direction * vec3(310.0, 180.0, 310.0));
+      float starHash = fract(sin(dot(starCell, vec3(12.9898, 78.233, 37.719))) * 43758.5453);
+      float stars = step(0.9972, starHash) * smoothstep(-0.12, 0.4, direction.y);
+      sky += vec3(0.72, 0.84, 1.0) * stars * uNight * 2.4;
+      float auroraWave = 0.5 + 0.5 * sin(direction.x * 22.0 + sin(direction.z * 13.0) * 3.0);
+      float auroraBand = smoothstep(0.58, 0.98, auroraWave) * smoothstep(0.05, 0.82, direction.y);
+      sky += vec3(0.08, 0.9, 0.46) * auroraBand * uAurora * 0.72;
+      sky = mix(sky, vec3(0.18, 0.25, 0.32), uStorm * 0.78);
       gl_FragColor = vec4(sky, 1.0);
       #include <tonemapping_fragment>
       #include <colorspace_fragment>
@@ -149,7 +189,13 @@ sky.frustumCulled = false
 scene.add(sky)
 
 const terrainMaterial = new THREE.ShaderMaterial({
-  uniforms: { uOffset: { value: new THREE.Vector2() }, uFestival: { value: 0 } },
+  uniforms: {
+    uOffset: { value: new THREE.Vector2() },
+    uFestival: { value: 0 },
+    uEventGround: { value: new THREE.Color(0xffffff) },
+    uEventWater: { value: new THREE.Color(0xffffff) },
+    uLunar: { value: 0 },
+  },
   vertexShader: `
     uniform vec2 uOffset;
     varying float vHeight;
@@ -230,6 +276,9 @@ const terrainMaterial = new THREE.ShaderMaterial({
   `,
   fragmentShader: `
     uniform float uFestival;
+    uniform vec3 uEventGround;
+    uniform vec3 uEventWater;
+    uniform float uLunar;
     varying float vHeight;
     varying float vWater;
     varying float vVariation;
@@ -254,9 +303,10 @@ const terrainMaterial = new THREE.ShaderMaterial({
       ground *= light;
       float haze = smoothstep(6200.0, 11200.0, length(vLocal));
       ground = mix(ground, vec3(0.49, 0.65, 0.59), haze * 0.42);
-      vec3 festivalGround = mix(vec3(0.32, 0.55, 0.10), vec3(0.78, 0.38, 0.50), smoothstep(280.0, 1050.0, vHeight));
-      festivalGround = mix(festivalGround, vec3(0.11, 0.52, 0.72), smoothstep(0.12, 0.8, vWater));
-      ground = mix(ground, festivalGround, uFestival * 0.84);
+      vec3 eventGround = mix(uEventGround, uEventWater, smoothstep(0.12, 0.8, vWater));
+      float lunarGray = dot(eventGround, vec3(0.299, 0.587, 0.114));
+      eventGround = mix(eventGround, vec3(lunarGray * 0.84), uLunar);
+      ground = mix(ground, eventGround, uFestival * 0.84);
       gl_FragColor = vec4(ground, 1.0);
       #include <tonemapping_fragment>
       #include <colorspace_fragment>
@@ -340,6 +390,149 @@ function createCannon(site: ReturnType<typeof generateCannons>[number]): THREE.G
   return cannon
 }
 
+const townGroup = new THREE.Group()
+scene.add(townGroup)
+const roadSurface = new THREE.MeshStandardMaterial({ color: 0x55574f, roughness: 0.96, flatShading: true })
+const roadPaint = new THREE.MeshStandardMaterial({ color: 0xd8c98c, roughness: 0.88, flatShading: true })
+const roadGeometry = new THREE.BoxGeometry(1, 1, 1)
+const buildingGeometry = new THREE.BoxGeometry(1, 1, 1)
+const roofGeometry = new THREE.ConeGeometry(1, 1, 4)
+const foundationMaterial = new THREE.MeshStandardMaterial({ color: 0x6b6355, roughness: 1, flatShading: true })
+const wallMaterials = [
+  new THREE.MeshStandardMaterial({ color: 0xd7c08d, roughness: 0.94, flatShading: true }),
+  new THREE.MeshStandardMaterial({ color: 0xc98562, roughness: 0.94, flatShading: true }),
+  new THREE.MeshStandardMaterial({ color: 0xd8d4c2, roughness: 0.94, flatShading: true }),
+  new THREE.MeshStandardMaterial({ color: 0x879578, roughness: 0.94, flatShading: true }),
+]
+const roofMaterials = [
+  new THREE.MeshStandardMaterial({ color: 0x64493b, roughness: 0.91, flatShading: true }),
+  new THREE.MeshStandardMaterial({ color: 0x3f5554, roughness: 0.88, flatShading: true }),
+  new THREE.MeshStandardMaterial({ color: 0xb64f3c, roughness: 0.9, flatShading: true }),
+]
+const windowMaterial = new THREE.MeshStandardMaterial({ color: 0x9dc8c5, roughness: 0.38, metalness: 0.15, flatShading: true })
+const doorMaterial = new THREE.MeshStandardMaterial({ color: 0x594435, roughness: 0.95, flatShading: true })
+const carMaterials = [
+  new THREE.MeshStandardMaterial({ color: 0xc7543f, roughness: 0.48, flatShading: true }),
+  new THREE.MeshStandardMaterial({ color: 0x477b8f, roughness: 0.48, flatShading: true }),
+  new THREE.MeshStandardMaterial({ color: 0xd2a74f, roughness: 0.48, flatShading: true }),
+  new THREE.MeshStandardMaterial({ color: 0x455b49, roughness: 0.48, flatShading: true }),
+]
+const carBodyGeometry = new THREE.BoxGeometry(25, 8, 13)
+const carCabinGeometry = new THREE.BoxGeometry(13, 7, 10)
+const carWheelGeometry = new THREE.CylinderGeometry(3.3, 3.3, 2.4, 8)
+const carActors: Array<{ group: THREE.Group; site: ReturnType<typeof generateSettlement>['cars'][number] }> = []
+
+function createTownBuilding(site: ReturnType<typeof generateSettlement>['buildings'][number]): THREE.Group {
+  const group = new THREE.Group()
+  const normal = terrainNormalAt(site.x, site.z)
+  const surfaceNormal = new THREE.Vector3(normal.x, normal.y, normal.z)
+  const alignToSlope = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), surfaceNormal)
+  const turnOnSlope = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), site.rotation)
+  group.quaternion.copy(alignToSlope.multiply(turnOnSlope))
+  group.scale.setScalar(site.scale)
+  group.position.set(site.x + normal.x * 2, site.height + normal.y * 2, site.z + normal.z * 2)
+
+  const width = site.kind === 'barn' ? 46 : site.kind === 'cottage' ? 31 : 38
+  const depth = site.kind === 'shop' ? 38 : 31
+  const bodyHeight = site.kind === 'cottage' ? 24 : site.kind === 'shop' ? 34 : site.kind === 'barn' ? 31 : 29
+  const roofHeight = site.kind === 'cottage' ? 24 : site.kind === 'barn' ? 19 : 17
+  const wallIndex = Math.floor(Math.abs(site.x * 0.017 + site.z * 0.013)) % wallMaterials.length
+  const roofIndex = Math.floor(Math.abs(site.x * 0.009 + site.z * 0.011)) % roofMaterials.length
+
+  const foundation = new THREE.Mesh(buildingGeometry, foundationMaterial)
+  foundation.scale.set(width + 5, 4, depth + 5)
+  foundation.position.y = 2
+  group.add(foundation)
+  const body = new THREE.Mesh(buildingGeometry, wallMaterials[wallIndex])
+  body.scale.set(width, bodyHeight, depth)
+  body.position.y = 4 + bodyHeight / 2
+  group.add(body)
+
+  if (site.kind === 'shop') {
+    const awning = new THREE.Mesh(buildingGeometry, roofMaterials[2])
+    awning.scale.set(width + 8, 3, 9)
+    awning.position.set(0, bodyHeight * 0.48, -depth * 0.56)
+    group.add(awning)
+  } else {
+    const roof = new THREE.Mesh(roofGeometry, roofMaterials[roofIndex])
+    roof.scale.set(width * 0.78, roofHeight, depth * 0.78)
+    roof.position.y = 4 + bodyHeight + roofHeight / 2
+    roof.rotation.y = Math.PI / 4
+    group.add(roof)
+  }
+
+  const door = new THREE.Mesh(buildingGeometry, doorMaterial)
+  door.scale.set(width * 0.18, bodyHeight * 0.58, 1.5)
+  door.position.set(0, 4 + bodyHeight * 0.29, -depth * 0.51)
+  group.add(door)
+  for (const side of [-1, 1]) {
+    const window = new THREE.Mesh(buildingGeometry, windowMaterial)
+    window.scale.set(width * 0.18, bodyHeight * 0.22, 1.2)
+    window.position.set(side * width * 0.29, 4 + bodyHeight * 0.58, -depth * 0.52)
+    group.add(window)
+  }
+
+  return group
+}
+
+function createTownCar(site: ReturnType<typeof generateSettlement>['cars'][number]): THREE.Group {
+  const car = new THREE.Group()
+  const colorIndex = [0xc7543f, 0x477b8f, 0xd2a74f, 0x455b49].indexOf(site.color)
+  const body = new THREE.Mesh(carBodyGeometry, carMaterials[Math.max(0, colorIndex)])
+  body.position.y = 7
+  car.add(body)
+  const cabin = new THREE.Mesh(carCabinGeometry, windowMaterial)
+  cabin.position.set(1.5, 14.2, 0)
+  car.add(cabin)
+  for (const x of [-7.5, 7.5]) {
+    for (const z of [-7, 7]) {
+      const wheel = new THREE.Mesh(carWheelGeometry, cannonIron)
+      wheel.position.set(x, 4, z)
+      wheel.rotation.z = Math.PI / 2
+      car.add(wheel)
+    }
+  }
+  return car
+}
+
+function updateTownCars(now: number): void {
+  const loopRadius = 300
+  const halfPerimeter = loopRadius * 2
+  const fullPerimeter = halfPerimeter * 4
+  for (const actor of carActors) {
+    const distance = (now * 0.006 * actor.site.speed + actor.site.phase * fullPerimeter) % fullPerimeter
+    const leg = Math.floor(distance / halfPerimeter)
+    const part = distance % halfPerimeter
+    let localX: number
+    let localZ: number
+    let direction: number
+    if (leg === 0) {
+      localX = -loopRadius + part
+      localZ = -loopRadius
+      direction = 0
+    } else if (leg === 1) {
+      localX = loopRadius
+      localZ = -loopRadius + part
+      direction = Math.PI / 2
+    } else if (leg === 2) {
+      localX = loopRadius - part
+      localZ = loopRadius
+      direction = Math.PI
+    } else {
+      localX = -loopRadius
+      localZ = loopRadius - part
+      direction = -Math.PI / 2
+    }
+
+    const cosine = Math.cos(actor.site.rotation)
+    const sine = Math.sin(actor.site.rotation)
+    const x = actor.site.x + localX * cosine + localZ * sine
+    const z = actor.site.z - localX * sine + localZ * cosine
+    actor.group.position.set(x, terrainHeight(x, z) + 5, z)
+    actor.group.rotation.y = actor.site.rotation + direction
+  }
+}
+
 const glider = new THREE.Group()
 const ivory = new THREE.MeshStandardMaterial({ color: 0xe9e3d2, roughness: 0.58, metalness: 0.08, flatShading: true })
 const underside = new THREE.MeshStandardMaterial({ color: 0xc59d68, roughness: 0.7, flatShading: true })
@@ -397,6 +590,14 @@ let fieldNotesKept = 0
 let nextFieldNoteSequence = 0
 let nextFieldNoteAt = 0
 let lastNoteRange = ''
+let activeWorldEvent: WorldEvent | null = null
+const baseSkyTop = new THREE.Color().setRGB(0.16, 0.43, 0.53)
+const baseSkyHorizon = new THREE.Color().setRGB(0.72, 0.79, 0.74)
+const eventSkyTop = new THREE.Color()
+const eventSkyHorizon = new THREE.Color()
+const eventGroundTint = new THREE.Color()
+const eventWaterTint = new THREE.Color()
+const neutralEventTint = new THREE.Color(0xffffff)
 
 function beginFieldNote(): void {
   activeFieldNote = createFieldNote(nextFieldNoteSequence, flight.x, flight.y, flight.z, flight.heading)
@@ -445,15 +646,16 @@ function updateFieldNote(now: number): void {
 
   if (!paused && reachedFieldNote(activeFieldNote, flight.x, flight.y, flight.z)) {
     fieldNotesKept += 1
+    const worldEvent = worldEventForObjective(fieldNotesKept - 1, worldSeed)
     noteCountReadout.textContent = `${String(fieldNotesKept).padStart(2, '0')} KEPT`
-    noteTitleReadout.textContent = `SKY PORTRAIT ${String(fieldNotesKept).padStart(2, '0')}`
-    notePromptReadout.textContent = 'The clouds are extremely pleased with themselves.'
+    noteTitleReadout.textContent = worldEvent.title
+    notePromptReadout.textContent = worldEvent.message
     noteRangeReadout.textContent = 'LOOK UP'
     noteProgressReadout.style.transform = 'scaleX(1)'
     lastNoteRange = 'LOOK UP'
     activeFieldNote = null
     waypointRing.visible = false
-    startCloudCelebration(now)
+    startCloudCelebration(now, worldEvent)
     nextFieldNoteAt = now + 11000
   }
 }
@@ -519,6 +721,29 @@ function updateForest(): void {
   })
   cannonField.clear()
   for (const site of generateCannons(regionX * 6000, regionZ * 6000, 12)) cannonField.add(createCannon(site))
+  townGroup.clear()
+  carActors.length = 0
+  const town = generateSettlement(regionX * 6000, regionZ * 6000)
+  for (const street of town.roads) {
+    const road = new THREE.Mesh(roadGeometry, roadSurface)
+    road.position.set(street.x, street.height + 1, street.z)
+    road.rotation.y = street.rotation
+    road.scale.set(street.length, 1.4, street.width)
+    townGroup.add(road)
+
+    for (const dash of [-1, 0, 1]) {
+      const marking = new THREE.Mesh(roadGeometry, roadPaint)
+      marking.position.set(dash * 34, 0.8, 0)
+      marking.scale.set(15, 0.4, 1.2)
+      road.add(marking)
+    }
+  }
+  for (const building of town.buildings) townGroup.add(createTownBuilding(building))
+  for (const car of town.cars) {
+    const group = createTownCar(car)
+    townGroup.add(group)
+    carActors.push({ group, site: car })
+  }
   forestTrunks.count = trees.length
   forestCrowns.count = pineCount
   forestBroadleaf.count = broadleafCount
@@ -539,7 +764,7 @@ function updateForest(): void {
 updateForest()
 const cloudGeometry = new THREE.SphereGeometry(1, 10, 7)
 const cloudMaterial = new THREE.MeshBasicMaterial({ color: 0xf3f0e4, transparent: true, opacity: 0.8, depthWrite: false })
-let randomSeed = 2041
+let randomSeed = worldSeed
 const random = () => {
   randomSeed = (randomSeed * 1664525 + 1013904223) >>> 0
   return randomSeed / 4294967296
@@ -553,9 +778,11 @@ interface FestivalFlower {
   rotation: number
   hue: number
   normal: THREE.Vector3
+  plantedAt: number
 }
 
-const flowerCapacity = 96
+const flowersPerObjective = 48
+const flowerCapacity = 48 * 24
 const flowerStemInstances = new THREE.InstancedMesh(
   new THREE.CylinderGeometry(0.8, 1.2, 22, 5),
   new THREE.MeshStandardMaterial({ color: 0x477d3d, roughness: 0.96, flatShading: true }),
@@ -578,9 +805,10 @@ let worldCelebrationStartedAt = 0
 const flowerTransform = new THREE.Object3D()
 const flowerColor = new THREE.Color()
 
-function plantCelebrationFlowers(): number {
-  festivalFlowers = []
-  for (let attempt = 0; attempt < flowerCapacity * 12 && festivalFlowers.length < flowerCapacity; attempt += 1) {
+function plantCelebrationFlowers(now: number): number {
+  const targetCount = Math.min(flowersPerObjective, flowerCapacity - festivalFlowers.length)
+  let planted = 0
+  for (let attempt = 0; attempt < targetCount * 16 && planted < targetCount; attempt += 1) {
     const angle = random() * Math.PI * 2
     const distance = 300 + Math.sqrt(random()) * 1350
     const x = flight.x + Math.cos(angle) * distance
@@ -597,13 +825,18 @@ function plantCelebrationFlowers(): number {
       rotation: random() * Math.PI * 2,
       hue: random() * 0.98,
       normal: new THREE.Vector3(surface.x, surface.y, surface.z),
+      plantedAt: now,
     })
+    planted += 1
   }
-  return festivalFlowers.length
+  return planted
 }
 
-function updateCelebrationFlowers(growth: number): void {
+function updateCelebrationFlowers(now: number): void {
   festivalFlowers.forEach((flower, index) => {
+    const age = now - flower.plantedAt
+    if (age >= 850) return
+    const growth = THREE.MathUtils.smoothstep(age / 850, 0, 1)
     const scale = flower.scale * growth
     const alignToSlope = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), flower.normal)
     const turnOnSlope = new THREE.Quaternion().setFromAxisAngle(flower.normal, flower.rotation)
@@ -644,34 +877,57 @@ function updateCelebrationFlowers(growth: number): void {
   flowerCenterInstances.computeBoundingSphere()
 }
 
-function startWorldCelebration(now: number): void {
+function startWorldCelebration(now: number, worldEvent: WorldEvent): void {
   worldCelebrationStartedAt = now
   worldCelebrationActive = true
-  momentTitle.textContent = 'THE SKY IS SMILING'
-  momentCopy.textContent = `${plantCelebrationFlowers()} emergency flowers have been planted.`
+  activeWorldEvent = worldEvent
+  eventSkyTop.setHex(worldEvent.skyTop)
+  eventSkyHorizon.setHex(worldEvent.skyHorizon)
+  eventGroundTint.setHex(worldEvent.groundTint)
+  eventWaterTint.setHex(worldEvent.waterTint)
+  momentTitle.textContent = worldEvent.title
+  momentCopy.textContent = `${worldEvent.message} ${plantCelebrationFlowers(now)} emergency flowers have been planted.`
   momentToast.setAttribute('aria-hidden', 'false')
   momentToast.classList.add('is-visible')
 }
 
 function updateWorldCelebration(now: number): void {
-  if (!worldCelebrationActive) return
+  if (!activeWorldEvent) return
 
   const elapsed = now - worldCelebrationStartedAt
-  const reveal = THREE.MathUtils.smoothstep(elapsed / 1200, 0, 1)
-  const fade = 1 - THREE.MathUtils.smoothstep((elapsed - 7600) / 2300, 0, 1)
-  ;(terrainMaterial.uniforms.uFestival.value as number) = reveal * fade
-  const flowerGrowth = THREE.MathUtils.smoothstep(elapsed / 850, 0, 1)
-    * (1 - THREE.MathUtils.smoothstep((elapsed - 7700) / 1800, 0, 1))
-  updateCelebrationFlowers(flowerGrowth)
-  momentToast.classList.toggle('is-visible', elapsed < 4800)
+  const eventMix = THREE.MathUtils.smoothstep(elapsed / 1200, 0, 1)
+  ;(terrainMaterial.uniforms.uFestival.value as number) = eventMix
+  skyMaterial.uniforms.uSkyTop.value.copy(baseSkyTop).lerp(eventSkyTop, eventMix)
+  skyMaterial.uniforms.uSkyHorizon.value.copy(baseSkyHorizon).lerp(eventSkyHorizon, eventMix)
+  skyMaterial.uniforms.uNight.value = (activeWorldEvent?.night ?? 0) * eventMix
+  skyMaterial.uniforms.uStorm.value = (activeWorldEvent?.storm ?? 0) * eventMix
+  skyMaterial.uniforms.uAurora.value = (activeWorldEvent?.aurora ?? 0) * eventMix
+  terrainMaterial.uniforms.uEventGround.value.copy(eventGroundTint).lerp(new THREE.Color(0xffffff), 1 - eventMix)
+  terrainMaterial.uniforms.uEventWater.value.copy(eventWaterTint).lerp(new THREE.Color(0xffffff), 1 - eventMix)
+  terrainMaterial.uniforms.uLunar.value = activeWorldEvent?.id === 'lunar-mail' ? eventMix : 0
+  hemisphereLight.intensity = 2.05 * (1 - eventMix * ((activeWorldEvent?.night ?? 0) * 0.66 + (activeWorldEvent?.storm ?? 0) * 0.3))
+  sunlight.intensity = 2.2 * (1 - eventMix * ((activeWorldEvent?.night ?? 0) * 0.9 + (activeWorldEvent?.storm ?? 0) * 0.58))
+  moon.visible = Boolean(activeWorldEvent?.moon && eventMix > 0.08)
+  updateCelebrationFlowers(now)
+  skyMaterial.uniforms.uSkyTop.value.copy(baseSkyTop).lerp(eventSkyTop, eventMix)
+  skyMaterial.uniforms.uSkyHorizon.value.copy(baseSkyHorizon).lerp(eventSkyHorizon, eventMix)
+  skyMaterial.uniforms.uNight.value = (activeWorldEvent?.night ?? 0) * eventMix
+  skyMaterial.uniforms.uStorm.value = (activeWorldEvent?.storm ?? 0) * eventMix
+  skyMaterial.uniforms.uAurora.value = (activeWorldEvent?.aurora ?? 0) * eventMix
+  terrainMaterial.uniforms.uEventGround.value.copy(eventGroundTint).lerp(neutralEventTint, 1 - eventMix)
+  terrainMaterial.uniforms.uEventWater.value.copy(eventWaterTint).lerp(neutralEventTint, 1 - eventMix)
+  terrainMaterial.uniforms.uLunar.value = activeWorldEvent?.id === 'lunar-mail' ? eventMix : 0
+  hemisphereLight.intensity = 2.05 * (1 - eventMix * ((activeWorldEvent?.night ?? 0) * 0.66 + (activeWorldEvent?.storm ?? 0) * 0.3))
+  sunlight.intensity = 2.2 * (1 - eventMix * ((activeWorldEvent?.night ?? 0) * 0.9 + (activeWorldEvent?.storm ?? 0) * 0.58))
+  moon.visible = Boolean(activeWorldEvent?.moon && eventMix > 0.08)
+  cloudMaterial.color.setHex(activeWorldEvent?.storm ? 0x8796a2 : 0xf3f0e4)
+  cloudMaterial.opacity = 0.8 - eventMix * ((activeWorldEvent?.storm ?? 0) * 0.18)
+  momentToast.classList.toggle('is-visible', worldCelebrationActive && elapsed < 4800)
 
-  if (elapsed >= 10500) {
+  if (elapsed >= 10500 && worldCelebrationActive) {
     worldCelebrationActive = false
     momentToast.setAttribute('aria-hidden', 'true')
     momentToast.classList.remove('is-visible')
-    ;(terrainMaterial.uniforms.uFestival.value as number) = 0
-    festivalFlowers = []
-    updateCelebrationFlowers(0)
   }
 }
 
@@ -695,7 +951,7 @@ let cloudCelebrationStartedAt = 0
 let cloudCelebrationHomes: THREE.Vector3[] = []
 let cloudCelebrationFaces: THREE.Vector3[] = []
 
-function startCloudCelebration(now: number): void {
+function startCloudCelebration(now: number, worldEvent: WorldEvent): void {
   const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(glider.quaternion).normalize()
   const right = new THREE.Vector3(1, 0, 0).applyQuaternion(glider.quaternion).normalize()
   const center = new THREE.Vector3(flight.x, flight.y, flight.z)
@@ -730,7 +986,7 @@ function startCloudCelebration(now: number): void {
   })
   cloudCelebrationStartedAt = now
   cloudCelebrationActive = true
-  startWorldCelebration(now)
+  startWorldCelebration(now, worldEvent)
 }
 
 function updateCloudCelebration(now: number): void {
@@ -779,6 +1035,15 @@ rightWingShape.closePath()
 const leftWingGeometry = new THREE.ShapeGeometry(leftWingShape)
 const rightWingGeometry = new THREE.ShapeGeometry(rightWingShape)
 const planeMaterial = new THREE.MeshStandardMaterial({ color: 0xd76c42, roughness: 0.45, metalness: 0.08, flatShading: true })
+const gliderMaterial = new THREE.MeshStandardMaterial({ color: 0xe9e3d2, roughness: 0.58, metalness: 0.08, flatShading: true })
+const kiteMaterial = new THREE.MeshStandardMaterial({ color: 0xd2a6dc, roughness: 0.8, flatShading: true, side: THREE.DoubleSide })
+const kiteShape = new THREE.Shape()
+kiteShape.moveTo(0, 19)
+kiteShape.lineTo(14, 0)
+kiteShape.lineTo(0, -21)
+kiteShape.lineTo(-14, 0)
+kiteShape.closePath()
+const kiteGeometry = new THREE.ShapeGeometry(kiteShape)
 const balloonMaterials = [
   new THREE.MeshStandardMaterial({ color: 0xc7543f, roughness: 0.72, flatShading: true }),
   new THREE.MeshStandardMaterial({ color: 0xd99f52, roughness: 0.72, flatShading: true }),
@@ -786,6 +1051,43 @@ const balloonMaterials = [
 let trafficActors: TrafficActor[] = []
 let trafficRegionX = Number.NaN
 let trafficRegionZ = Number.NaN
+const rainDropCount = 280
+const rainPositions = new Float32Array(rainDropCount * 6)
+for (let index = 0; index < rainDropCount; index += 1) {
+  const offset = index * 6
+  const x = (random() - 0.5) * 2500
+  const y = 150 + random() * 1200
+  const z = (random() - 0.5) * 3400
+  rainPositions.set([x, y, z, x + 14, y - 75, z + 4], offset)
+}
+const rainGeometry = new THREE.BufferGeometry()
+rainGeometry.setAttribute('position', new THREE.BufferAttribute(rainPositions, 3).setUsage(THREE.DynamicDrawUsage))
+const rainMaterial = new THREE.LineBasicMaterial({ color: 0xbdd6eb, transparent: true, opacity: 0, depthWrite: false })
+const rain = new THREE.LineSegments(rainGeometry, rainMaterial)
+rain.frustumCulled = false
+rain.visible = false
+scene.add(rain)
+
+function updateEventWeather(delta: number): void {
+  const eventMix = terrainMaterial.uniforms.uFestival.value as number
+  rain.visible = Boolean(activeWorldEvent?.rain && eventMix > 0.05)
+  rainMaterial.opacity = (activeWorldEvent?.rain ?? false) ? eventMix * 0.64 : 0
+  if (!rain.visible) return
+
+  rain.position.set(flight.x, flight.y, flight.z)
+  for (let index = 0; index < rainDropCount; index += 1) {
+    const offset = index * 6
+    rainPositions[offset + 1] -= delta * 720
+    rainPositions[offset + 4] -= delta * 720
+    if (rainPositions[offset + 1] < -160) {
+      const x = (random() - 0.5) * 2500
+      const y = 700 + random() * 700
+      const z = (random() - 0.5) * 3400
+      rainPositions.set([x, y, z, x + 14, y - 75, z + 4], offset)
+    }
+  }
+  rainGeometry.attributes.position.needsUpdate = true
+}
 
 function createBirdFlock(): { group: THREE.Group; wings: TrafficActor['wings'] } {
   const group = new THREE.Group()
@@ -819,23 +1121,41 @@ function createTrafficModel(kind: TrafficActor['spawn']['kind']): { group: THREE
 
   if (kind === 'birds') return createBirdFlock()
 
-  if (kind === 'airplane') {
+  if (kind === 'kite') {
+    const sail = new THREE.Mesh(kiteGeometry, kiteMaterial)
+    group.add(sail)
+    const spine = new THREE.Mesh(new THREE.BoxGeometry(0.8, 42, 0.8), underside)
+    group.add(spine)
+    const crossbar = new THREE.Mesh(new THREE.BoxGeometry(28, 0.8, 0.8), ivory)
+    group.add(crossbar)
+    for (let index = 0; index < 4; index += 1) {
+      const tail = new THREE.Mesh(new THREE.BoxGeometry(1.2, 18, 0.6), balloonMaterials[index % 2])
+      tail.position.set(index % 2 === 0 ? -4 : 4, -29 - Math.floor(index / 2) * 16, 0)
+      group.add(tail)
+    }
+    return { group, wings }
+  }
+
+  if (kind === 'airplane' || kind === 'glider') {
+    const paint = kind === 'airplane' ? planeMaterial : gliderMaterial
     const airplane = new THREE.Group()
-    const fuselage = new THREE.Mesh(new THREE.ConeGeometry(0.8, 12, 7), planeMaterial)
+    const fuselage = new THREE.Mesh(new THREE.ConeGeometry(0.8, 14, 7), paint)
     fuselage.rotation.x = -Math.PI / 2
     airplane.add(fuselage)
-    const wing = new THREE.Mesh(new THREE.BoxGeometry(22, 0.6, 4.3), ivory)
+    const wing = new THREE.Mesh(new THREE.BoxGeometry(kind === 'glider' ? 34 : 22, 0.6, 4.3), ivory)
     wing.position.y = 0.1
     airplane.add(wing)
     const tail = new THREE.Mesh(new THREE.BoxGeometry(7, 0.45, 2), underside)
     tail.position.set(0, 0.1, 4.2)
     airplane.add(tail)
-    const tailFin = new THREE.Mesh(new THREE.BoxGeometry(0.35, 2.1, 2), planeMaterial)
+    const tailFin = new THREE.Mesh(new THREE.BoxGeometry(0.35, 2.1, 2), paint)
     tailFin.position.set(0, 0.8, 4)
     airplane.add(tailFin)
-    const propeller = new THREE.Mesh(new THREE.BoxGeometry(5.4, 0.22, 0.26), canopy)
-    propeller.position.z = -6.2
-    airplane.add(propeller)
+    if (kind === 'airplane') {
+      const propeller = new THREE.Mesh(new THREE.BoxGeometry(5.4, 0.22, 0.26), canopy)
+      propeller.position.z = -6.2
+      airplane.add(propeller)
+    }
     group.add(airplane)
     return { group, wings }
   }
@@ -870,9 +1190,9 @@ function updateTraffic(delta: number, now: number): void {
     for (const actor of trafficActors) scene.remove(actor.group)
     trafficRegionX = regionX
     trafficRegionZ = regionZ
-    trafficActors = generateFlyingThings(regionX * 6000, regionZ * 6000, 12).map((spawn) => {
+    trafficActors = generateFlyingThings(regionX * 6000, regionZ * 6000, 24).map((spawn) => {
       const model = createTrafficModel(spawn.kind)
-      model.group.scale.setScalar(spawn.kind === 'birds' ? 1.6 : spawn.kind === 'airplane' ? 0.8 : 1)
+      model.group.scale.setScalar(spawn.kind === 'birds' ? 1.6 : spawn.kind === 'airplane' ? 0.8 : spawn.kind === 'kite' ? 1.25 : 1)
       model.group.rotation.y = spawn.heading
       scene.add(model.group)
       return { group: model.group, wings: model.wings, spawn, distance: 0 }
@@ -885,7 +1205,7 @@ function updateTraffic(delta: number, now: number): void {
     const directionZ = -Math.cos(actor.spawn.heading)
     const x = actor.spawn.x + directionX * actor.distance
     const z = actor.spawn.z + directionZ * actor.distance
-    const clearance = actor.spawn.kind === 'balloon' ? 850 : actor.spawn.kind === 'airplane' ? 550 : 300
+    const clearance = actor.spawn.kind === 'balloon' ? 850 : actor.spawn.kind === 'airplane' ? 550 : actor.spawn.kind === 'kite' ? 620 : actor.spawn.kind === 'glider' ? 480 : 300
     const altitude = Math.max(actor.spawn.y, terrainHeight(x, z) + clearance)
     actor.group.position.set(
       x,
@@ -1019,6 +1339,7 @@ function render(now: number): void {
   terrain.position.set(terrainOriginX, 0, terrainOriginZ)
   ;(terrainMaterial.uniforms.uOffset.value as THREE.Vector2).set(terrainOriginX, terrainOriginZ)
   updateForest()
+  if (!paused) updateTownCars(now)
 
   const cameraOffset = new THREE.Vector3(0, 13, 58).applyQuaternion(glider.quaternion)
   const desiredCameraPosition = glider.position.clone().add(cameraOffset)
@@ -1026,16 +1347,18 @@ function render(now: number): void {
   camera.position.lerp(desiredCameraPosition, 1 - Math.exp(-delta * 3.4))
   camera.lookAt(cameraTarget)
   sky.position.copy(camera.position)
+  moon.position.copy(camera.position).addScaledVector(moonDirection, 7200)
 
   if (cloudCelebrationActive) {
     updateCloudCelebration(now)
   } else {
     for (const cloud of clouds) {
       const distance = Math.hypot(cloud.position.x - flight.x, cloud.position.z - flight.z)
-      if (distance > 6700) {
+      if (distance > 6700 || cloud.position.y < flight.y + 360) {
         const angle = random() * Math.PI * 2
         const radius = 2800 + random() * 2100
-        cloud.position.set(flight.x + Math.cos(angle) * radius, 1450 + random() * 780, flight.z + Math.sin(angle) * radius)
+        const altitude = flight.y + 500 + random() * 450
+        cloud.position.set(flight.x + Math.cos(angle) * radius, altitude, flight.z + Math.sin(angle) * radius)
       }
     }
   }
@@ -1043,6 +1366,7 @@ function render(now: number): void {
   updateTraffic(delta, now)
   updateFieldNote(now)
   updateWorldCelebration(now)
+  updateEventWeather(delta)
   updateReadouts()
   renderer.render(scene, camera)
   requestAnimationFrame(render)
