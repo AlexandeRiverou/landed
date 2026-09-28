@@ -1,0 +1,25 @@
+{
+  "name": "aerie-flight",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "test": "tsx --test src/flight.test.ts src/world.test.ts"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.3",
+    "@types/three": "^0.186.0",
+    "tsx": "^4.23.15",
+    "typescript": "~5.6.2",
+    "vite": "^6.0.0"
+  },
+  "dependencies": {
+    "three": "^0.186.1"
+  }
+}
