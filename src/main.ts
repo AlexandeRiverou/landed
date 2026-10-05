@@ -1,9 +1,12 @@
 import * as THREE from 'three'
 import './style.css'
 import { createFlightState, stepFlight } from './flight'
-import { createFieldNote, fieldNoteBearing, fieldNoteDistance, fieldNoteProgress, reachedFieldNote, type FieldNote } from './objectives'
+import { createFieldNote, fieldNoteBearing, fieldNoteDistance, fieldNoteProgress, reachedFieldNote, relocateFieldNote, type FieldNote } from './objectives'
+import { createPersuasion, persuasionLook, resetPersuasionDistance, stepPersuasion, type PersuasionEvent } from './persuasion'
+import { segmentHitsSphere } from './collision'
+import { resolveTowerCollision } from './obstacles'
 import { worldEventForObjective, type WorldEvent } from './world-events'
-import { createWorldSeed, generateCannons, generateFlyingThings, generateForest, generateRockField, generateSettlement, setWorldSeed, terrainGridOrigin, terrainHeight, terrainNormalAt, waterCoverage } from './world'
+import { createWorldSeed, generateCannons, generateFlyingThings, generateForest, generateRockField, generateSettlement, generateTowers, generateWaterfalls, setWorldSeed, type TowerSite, type WaterfallSite, terrainGridOrigin, terrainHeight, terrainNormalAt, waterCoverage, worldSeedOffset } from './world'
 
 const worldSeed = createWorldSeed()
 setWorldSeed(worldSeed)
@@ -21,6 +24,7 @@ app.innerHTML = `
       </a>
       <div class="flight-status"><span class="status-light"></span><span>IN THE AIR</span></div>
       <div class="flight-actions">
+        <button class="fire-button" id="fire-button" type="button" aria-label="Hold to fire" aria-pressed="false">FIRE</button>
         <button class="boost-button" id="boost-button" type="button" aria-label="Hold to boost" aria-pressed="false">BOOST</button>
         <button class="reset-button" id="reset-flight" type="button">RESET</button>
         <button class="pause-button" id="pause-button" type="button" aria-label="Pause flight">
@@ -40,6 +44,7 @@ app.innerHTML = `
       <div class="data-row"><span>ALTITUDE</span><strong><span id="altitude">1,320</span><small> M</small></strong></div>
       <div class="data-row"><span>GROUND SPEED</span><strong><span id="speed">187</span><small> KM/H</small></strong></div>
       <div class="data-row"><span>HEADING</span><strong><span id="heading">000</span><small> DEG</small></strong></div>
+      <div class="data-row"><span>TARGETS</span><strong><span id="targets-popped">0</span><small> POPPED</small></strong></div>
       <div class="terrain-readout"><span class="terrain-line" aria-hidden="true"></span><span id="terrain-label">ABOVE THE RIDGELINE</span></div>
     </section>
 
@@ -53,7 +58,7 @@ app.innerHTML = `
 
     <div class="sightline" aria-hidden="true"><span></span><i></i><span></span></div>
     <div class="moment-toast" id="moment-toast" aria-live="polite" aria-hidden="true">
-      <span>FIELD NOTE SAVED</span>
+      <span id="moment-label">FIELD NOTE SAVED</span>
       <strong id="moment-title">THE SKY IS SMILING</strong>
       <small id="moment-copy">The clouds think they are helping.</small>
     </div>
@@ -78,6 +83,7 @@ const worldRoot = document.querySelector<HTMLDivElement>('#world')!
 const errorMessage = document.querySelector<HTMLDivElement>('#render-error')!
 const pauseButton = document.querySelector<HTMLButtonElement>('#pause-button')!
 const boostButton = document.querySelector<HTMLButtonElement>('#boost-button')!
+const fireButton = document.querySelector<HTMLButtonElement>('#fire-button')!
 const pauseLabel = document.querySelector<HTMLSpanElement>('#pause-label')!
 const pauseShade = document.querySelector<HTMLDivElement>('#pause-shade')!
 const altitudeReadout = document.querySelector<HTMLSpanElement>('#altitude')!
@@ -85,6 +91,7 @@ const speedReadout = document.querySelector<HTMLSpanElement>('#speed')!
 const headingReadout = document.querySelector<HTMLSpanElement>('#heading')!
 const terrainReadout = document.querySelector<HTMLSpanElement>('#terrain-label')!
 const coordinatesReadout = document.querySelector<HTMLSpanElement>('#coordinates')!
+const targetsPoppedReadout = document.querySelector<HTMLSpanElement>('#targets-popped')!
 const noteCountReadout = document.querySelector<HTMLSpanElement>('#note-count')!
 const noteTitleReadout = document.querySelector<HTMLElement>('#note-title')!
 const notePromptReadout = document.querySelector<HTMLParagraphElement>('#note-prompt')!
@@ -92,6 +99,10 @@ const noteRangeReadout = document.querySelector<HTMLSpanElement>('#note-range')!
 const noteProgressReadout = document.querySelector<HTMLSpanElement>('#note-progress')!
 const noteArrowReadout = document.querySelector<HTMLElement>('#note-arrow')!
 const momentToast = document.querySelector<HTMLDivElement>('#moment-toast')!
+const momentLabel = document.querySelector<HTMLSpanElement>('#moment-label')!
+const flightStatus = document.querySelector<HTMLElement>('.flight-status')!
+const dataLive = document.querySelector<HTMLElement>('.data-live')!
+const wayfinderPanel = document.querySelector<HTMLElement>('.wayfinder')!
 const momentTitle = document.querySelector<HTMLElement>('#moment-title')!
 const momentCopy = document.querySelector<HTMLElement>('#moment-copy')!
 
@@ -145,6 +156,9 @@ const skyMaterial = new THREE.ShaderMaterial({
     uNight: { value: 0 },
     uStorm: { value: 0 },
     uAurora: { value: 0 },
+    uGlowDirection: { value: new THREE.Vector3(0, 0, -1) },
+    uGlowColor: { value: new THREE.Color(0xff4fa3) },
+    uGlow: { value: 0 },
   },
   vertexShader: `
     varying vec3 vDirection;
@@ -160,6 +174,9 @@ const skyMaterial = new THREE.ShaderMaterial({
     uniform float uNight;
     uniform float uStorm;
     uniform float uAurora;
+    uniform vec3 uGlowDirection;
+    uniform vec3 uGlowColor;
+    uniform float uGlow;
     varying vec3 vDirection;
     void main() {
       vec3 direction = normalize(vDirection);
@@ -177,6 +194,7 @@ const skyMaterial = new THREE.ShaderMaterial({
       float auroraWave = 0.5 + 0.5 * sin(direction.x * 22.0 + sin(direction.z * 13.0) * 3.0);
       float auroraBand = smoothstep(0.58, 0.98, auroraWave) * smoothstep(0.05, 0.82, direction.y);
       sky += vec3(0.08, 0.9, 0.46) * auroraBand * uAurora * 0.72;
+      sky += uGlowColor * pow(max(dot(direction, normalize(uGlowDirection)), 0.0), 5.0) * uGlow * 0.6;
       sky = mix(sky, vec3(0.18, 0.25, 0.32), uStorm * 0.78);
       gl_FragColor = vec4(sky, 1.0);
       #include <tonemapping_fragment>
@@ -195,9 +213,11 @@ const terrainMaterial = new THREE.ShaderMaterial({
     uEventGround: { value: new THREE.Color(0xffffff) },
     uEventWater: { value: new THREE.Color(0xffffff) },
     uLunar: { value: 0 },
+    uSeedOffset: { value: new THREE.Vector2(...worldSeedOffset()) },
   },
   vertexShader: `
     uniform vec2 uOffset;
+    uniform vec2 uSeedOffset;
     varying float vHeight;
     varying float vWater;
     varying float vVariation;
@@ -207,7 +227,10 @@ const terrainMaterial = new THREE.ShaderMaterial({
     varying vec2 vWorld;
 
     float hash(vec2 p) {
-      return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+      p = mod(p + uSeedOffset, 256.0);
+      vec3 p3 = fract(vec3(p.x, p.y, p.x) * 0.1031);
+      p3 += dot(p3, p3.yzx + 33.33);
+      return fract((p3.x + p3.y) * p3.z);
     }
 
     float noise(vec2 p) {
@@ -222,9 +245,31 @@ const terrainMaterial = new THREE.ShaderMaterial({
       float broad = noise(p * 0.00008) * 170.0;
       float foothills = noise(p * 0.00022) * 110.0;
       float ridgeShape = 1.0 - abs(noise(p * 0.00058) * 2.0 - 1.0);
-      float ridges = pow(ridgeShape, 1.7) * 720.0;
+      float ridges = pow(ridgeShape, 1.7) * 1150.0;
       float detail = noise(p * 0.0024) * 36.0;
-      return 35.0 + broad + foothills + ridges + detail;
+      float height = 35.0 + broad + foothills + ridges + detail;
+
+      vec2 massifCell = floor(p / 8000.0);
+      if (hash(massifCell + vec2(301.1, 57.3)) >= 0.55) {
+        vec2 center = (massifCell + vec2(0.3 + hash(massifCell + vec2(12.7, 401.9)) * 0.4, 0.3 + hash(massifCell + vec2(88.2, 19.4)) * 0.4)) * 8000.0;
+        float radius = 1000.0 + hash(massifCell + vec2(142.6, 7.7)) * 600.0;
+        float peak = 1400.0 + hash(massifCell + vec2(63.9, 233.1)) * 1200.0;
+        float lift = 1.0 - smoothstep(0.0, radius, length(p - center));
+        if (lift > 0.0) height += pow(lift, 1.6) * peak * (0.8 + noise(p * 0.003) * 0.4);
+      }
+
+      float lane = floor(p.x / 6400.0);
+      if (hash(vec2(lane + 411.3, 9.7)) >= 0.45) {
+        float center = (lane + 0.3 + hash(vec2(lane + 5.1, 77.7)) * 0.4) * 6400.0;
+        float phase = hash(vec2(lane + 29.4, 3.3)) * 6.283185307179586;
+        float distanceToCanyon = abs(p.x - (center + sin(p.y * 0.0011 + phase) * 380.0));
+        float presence = smoothstep(0.38, 0.5, noise(vec2(p.y * 0.00035 + lane * 7.3, 0.5)));
+        float mesa = (1.0 - smoothstep(230.0, 680.0, distanceToCanyon)) * presence;
+        height += (max(height, 430.0) - height) * mesa;
+        float carve = (1.0 - smoothstep(90.0, 230.0, distanceToCanyon)) * presence;
+        height += (70.0 + noise(p * 0.004) * 30.0 - height) * carve;
+      }
+      return height;
     }
 
     float waterAt(vec2 point, out float waterLevel) {
@@ -296,6 +341,8 @@ const terrainMaterial = new THREE.ShaderMaterial({
       vec3 ground = mix(grass, soil, exposedSoil);
       ground = mix(ground, rock, smoothstep(610.0, 940.0, vHeight));
       ground = mix(ground, snow, smoothstep(1080.0, 1330.0, vHeight));
+      float steepness = 1.0 - smoothstep(0.3, 0.8, normalize(vNormal).y);
+      ground = mix(ground, rock * 0.85, steepness * 0.9);
       float ripple = 0.5 + 0.5 * sin(vWorld.x * 0.003 + sin(vWorld.y * 0.002) * 2.0);
       vec3 water = mix(vec3(0.055, 0.25, 0.29), vec3(0.28, 0.55, 0.54), smoothstep(0.56, 0.98, ripple));
       ground = mix(ground, water, smoothstep(0.12, 0.8, vWater));
@@ -500,6 +547,7 @@ function updateTownCars(now: number): void {
   const halfPerimeter = loopRadius * 2
   const fullPerimeter = halfPerimeter * 4
   for (const actor of carActors) {
+    if (!actor.group.parent) continue
     const distance = (now * 0.006 * actor.site.speed + actor.site.phase * fullPerimeter) % fullPerimeter
     const leg = Math.floor(distance / halfPerimeter)
     const part = distance % halfPerimeter
@@ -579,14 +627,74 @@ glider.add(tailFin)
 scene.add(glider)
 
 const flight = createFlightState()
-const waypointRing = new THREE.Mesh(
-  new THREE.TorusGeometry(78, 2.5, 12, 64),
-  new THREE.MeshBasicMaterial({ color: 0xffd28a, side: THREE.DoubleSide, toneMapped: false }),
-)
+const waypointMaterial = new THREE.MeshBasicMaterial({ color: 0xffd28a, side: THREE.DoubleSide, toneMapped: false })
+const waypointRing = new THREE.Mesh(new THREE.TorusGeometry(78, 2.5, 12, 64), waypointMaterial)
 waypointRing.visible = false
 scene.add(waypointRing)
+const beaconMaterial = new THREE.MeshBasicMaterial({ color: 0xff4fa3, transparent: true, opacity: 0.28, depthWrite: false, side: THREE.DoubleSide, toneMapped: false })
+const waypointBeacon = new THREE.Mesh(new THREE.CylinderGeometry(26, 26, 5000, 20, 1, true), beaconMaterial)
+waypointBeacon.visible = false
+scene.add(waypointBeacon)
+const guideCount = 8
+const guideMaterial = new THREE.MeshBasicMaterial({ color: 0xff4fa3, toneMapped: false })
+const guideArrows = Array.from({ length: guideCount }, () => {
+  const arrow = new THREE.Mesh(new THREE.ConeGeometry(16, 44, 4), guideMaterial)
+  arrow.visible = false
+  scene.add(arrow)
+  return arrow
+})
+const guideDirection = new THREE.Vector3()
+const upAxis = new THREE.Vector3(0, 1, 0)
+let persuasion = createPersuasion()
+let ringScale = 1
+let persuasionToastUntil = 0
+let lastPersuasionTick = 0
+
+const glowTexture = (() => {
+  const canvas = document.createElement('canvas')
+  canvas.width = 64
+  canvas.height = 64
+  const context = canvas.getContext('2d')!
+  const gradient = context.createRadialGradient(32, 32, 0, 32, 32, 32)
+  gradient.addColorStop(0, 'rgba(255,255,255,1)')
+  gradient.addColorStop(0.35, 'rgba(255,255,255,0.6)')
+  gradient.addColorStop(1, 'rgba(255,255,255,0)')
+  context.fillStyle = gradient
+  context.fillRect(0, 0, 64, 64)
+  const texture = new THREE.CanvasTexture(canvas)
+  texture.colorSpace = THREE.SRGBColorSpace
+  return texture
+})()
+const sparkleCount = 120
+const sparklePositions = new Float32Array(sparkleCount * 3)
+for (let index = 0; index < sparkleCount; index += 1) {
+  const vertical = Math.random() * 2 - 1
+  const angle = Math.random() * Math.PI * 2
+  const flat = Math.sqrt(1 - vertical * vertical)
+  const radius = 70 + Math.random() * 70
+  sparklePositions.set([Math.cos(angle) * flat * radius, vertical * radius, Math.sin(angle) * flat * radius], index * 3)
+}
+const sparkleGeometry = new THREE.BufferGeometry()
+sparkleGeometry.setAttribute('position', new THREE.BufferAttribute(sparklePositions, 3))
+const sparkleMaterial = new THREE.PointsMaterial({ color: 0xffffff, size: 18, map: glowTexture, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false })
+const sparkles = new THREE.Points(sparkleGeometry, sparkleMaterial)
+sparkles.visible = false
+sparkles.frustumCulled = false
+scene.add(sparkles)
+const tunnelCount = 6
+const tunnelMaterial = new THREE.MeshBasicMaterial({ color: 0xff4fa3, side: THREE.DoubleSide, toneMapped: false })
+const tunnelGeometry = new THREE.TorusGeometry(78, 2.5, 10, 48)
+const tunnelRings = Array.from({ length: tunnelCount }, () => {
+  const ring = new THREE.Mesh(tunnelGeometry, tunnelMaterial)
+  ring.visible = false
+  scene.add(ring)
+  return ring
+})
+const tunnelDirection = new THREE.Vector3()
+const zAxis = new THREE.Vector3(0, 0, 1)
 let activeFieldNote: FieldNote | null = null
 let fieldNotesKept = 0
+let targetsPopped = 0
 let nextFieldNoteSequence = 0
 let nextFieldNoteAt = 0
 let lastNoteRange = ''
@@ -599,12 +707,59 @@ const eventGroundTint = new THREE.Color()
 const eventWaterTint = new THREE.Color()
 const neutralEventTint = new THREE.Color(0xffffff)
 
+function applyPersuasionLook(): void {
+  const look = persuasionLook(persuasion)
+  const shown = waypointRing.visible
+  waypointBeacon.visible = look.beacon && shown
+  for (const arrow of guideArrows) arrow.visible = look.guides && shown
+  for (const ring of tunnelRings) ring.visible = look.tunnel && shown
+  sparkles.visible = look.sparkles && shown
+  wayfinderPanel.classList.toggle('is-pleading', look.hudPulse && shown)
+  if (!shown || !look.skyGlow) skyMaterial.uniforms.uGlow.value = 0
+  waypointMaterial.color.setHex(look.color)
+}
+
+function resetPersuasionVisuals(): void {
+  persuasion = createPersuasion()
+  ringScale = 1
+  persuasionToastUntil = 0
+  applyPersuasionLook()
+}
+
+function escalatePersuasion(event: PersuasionEvent, now: number): void {
+  const note = activeFieldNote
+  if (!note) return
+  applyPersuasionLook()
+
+  if (event.relocateTo !== null && fieldNoteDistance(note, flight.x, flight.y, flight.z) > event.relocateTo) {
+    const moved = relocateFieldNote(note, flight.x, flight.y, flight.z, flight.heading, event.relocateTo)
+    activeFieldNote = moved
+    waypointRing.position.set(moved.x, moved.y, moved.z)
+    waypointRing.rotation.y = moved.heading
+    resetPersuasionDistance(persuasion, fieldNoteDistance(moved, flight.x, flight.y, flight.z))
+    lastNoteRange = ''
+  }
+
+  const message = event.message
+  if (message) {
+    momentLabel.textContent = 'THE RING HAS NOTICED'
+    momentTitle.textContent = message.title
+    momentCopy.textContent = message.copy
+    notePromptReadout.textContent = message.title
+    momentToast.setAttribute('aria-hidden', 'false')
+    momentToast.classList.add('is-visible')
+    persuasionToastUntil = now + 5200
+  }
+}
+
 function beginFieldNote(): void {
   activeFieldNote = createFieldNote(nextFieldNoteSequence, flight.x, flight.y, flight.z, flight.heading)
   nextFieldNoteSequence += 1
   waypointRing.position.set(activeFieldNote.x, activeFieldNote.y, activeFieldNote.z)
   waypointRing.rotation.set(0, activeFieldNote.heading, 0)
   waypointRing.visible = true
+  resetPersuasionVisuals()
+  lastPersuasionTick = performance.now()
   noteCountReadout.textContent = `${String(fieldNotesKept).padStart(2, '0')} KEPT`
   noteTitleReadout.textContent = activeFieldNote.title
   notePromptReadout.textContent = 'Fly through the amber ring'
@@ -617,6 +772,9 @@ function resetFieldNotes(): void {
   nextFieldNoteSequence = 0
   nextFieldNoteAt = performance.now() + 1800
   waypointRing.visible = false
+  resetPersuasionVisuals()
+  momentToast.classList.remove('is-visible')
+  momentToast.setAttribute('aria-hidden', 'true')
   noteCountReadout.textContent = '00 KEPT'
   noteTitleReadout.textContent = 'THE NEXT VIEW'
   notePromptReadout.textContent = 'A new wayfinder will appear soon'
@@ -626,15 +784,75 @@ function resetFieldNotes(): void {
 }
 
 function updateFieldNote(now: number): void {
+  if (persuasionToastUntil > 0 && now > persuasionToastUntil) {
+    persuasionToastUntil = 0
+    momentToast.classList.remove('is-visible')
+    momentToast.setAttribute('aria-hidden', 'true')
+  }
   if (!activeFieldNote) {
     if (now >= nextFieldNoteAt) beginFieldNote()
     else return
   }
   if (!activeFieldNote) return
 
-  const distance = fieldNoteDistance(activeFieldNote, flight.x, flight.y, flight.z)
-  waypointRing.scale.setScalar(1 + Math.sin(now * 0.002) * 0.035)
+  const tickDelta = Math.min((now - lastPersuasionTick) / 1000, 0.1)
+  lastPersuasionTick = now
+  let distance = fieldNoteDistance(activeFieldNote, flight.x, flight.y, flight.z)
+  const persuasionEvent = paused ? null : stepPersuasion(persuasion, distance, tickDelta, random)
+  if (persuasionEvent) {
+    escalatePersuasion(persuasionEvent, now)
+    if (!activeFieldNote) return
+    distance = fieldNoteDistance(activeFieldNote, flight.x, flight.y, flight.z)
+  }
+
+  const look = persuasionLook(persuasion)
+  ringScale += (look.scale - ringScale) * (1 - Math.exp(-tickDelta * 2.5))
+  const pulse = look.strobe ? 1 + Math.sin(now * 0.012) * 0.08 : 1 + Math.sin(now * 0.002) * 0.035
+  waypointRing.scale.setScalar(ringScale * pulse)
   waypointRing.rotation.z = Math.sin(now * 0.0007) * 0.035
+  waypointMaterial.color.setHex(look.strobe && Math.floor(now / 110) % 2 === 0 ? 0xffffff : look.color)
+  beaconMaterial.color.setHex(look.color)
+  guideMaterial.color.setHex(look.color)
+  tunnelMaterial.color.setHex(look.color)
+  if (look.beacon) {
+    waypointBeacon.position.set(activeFieldNote.x, activeFieldNote.y, activeFieldNote.z)
+    beaconMaterial.opacity = 0.2 + 0.12 * Math.sin(now * 0.004)
+  }
+  if (look.guides) {
+    guideDirection.set(activeFieldNote.x - flight.x, activeFieldNote.y - flight.y, activeFieldNote.z - flight.z)
+    const length = guideDirection.length()
+    guideDirection.normalize()
+    guideArrows.forEach((arrow, index) => {
+      const along = 140 + ((now * 0.0004 + index / guideCount) % 1) * Math.max(0, Math.min(length - 220, 1800))
+      arrow.position.set(flight.x, flight.y, flight.z).addScaledVector(guideDirection, along)
+      arrow.quaternion.setFromUnitVectors(upAxis, guideDirection)
+      arrow.visible = length > 420
+    })
+  }
+  if (look.sparkles) {
+    sparkles.position.set(activeFieldNote.x, activeFieldNote.y, activeFieldNote.z)
+    sparkles.scale.setScalar(ringScale)
+    sparkles.rotation.y = now * 0.0006
+    sparkleMaterial.color.setHex(look.color)
+    sparkleMaterial.opacity = 0.75 + 0.25 * Math.sin(now * 0.01)
+  }
+  if (look.tunnel) {
+    tunnelDirection.set(flight.x - activeFieldNote.x, flight.y - activeFieldNote.y, flight.z - activeFieldNote.z)
+    const span = tunnelDirection.length()
+    tunnelDirection.normalize()
+    tunnelRings.forEach((ring, index) => {
+      const along = (index + 1) * 190
+      ring.position.set(activeFieldNote!.x, activeFieldNote!.y, activeFieldNote!.z).addScaledVector(tunnelDirection, along)
+      ring.quaternion.setFromUnitVectors(zAxis, tunnelDirection)
+      ring.scale.setScalar(Math.max(0.5, ringScale * (0.9 - index * 0.08)))
+      ring.visible = along < span - 120
+    })
+  }
+  if (look.skyGlow) {
+    skyMaterial.uniforms.uGlow.value = 0.75 + 0.25 * Math.sin(now * 0.003)
+    skyMaterial.uniforms.uGlowColor.value.setHex(look.color)
+    skyMaterial.uniforms.uGlowDirection.value.set(activeFieldNote.x - camera.position.x, activeFieldNote.y - camera.position.y, activeFieldNote.z - camera.position.z).normalize()
+  }
   const rangeText = `${(distance / 1000).toFixed(1)} KM`
   if (rangeText !== lastNoteRange) {
     noteRangeReadout.textContent = rangeText
@@ -644,7 +862,7 @@ function updateFieldNote(now: number): void {
   noteArrowReadout.style.transform = `rotate(${-45 - bearing * 180 / Math.PI}deg)`
   noteProgressReadout.style.transform = `scaleX(${fieldNoteProgress(activeFieldNote, flight.x, flight.z)})`
 
-  if (!paused && reachedFieldNote(activeFieldNote, flight.x, flight.y, flight.z)) {
+  if (!paused && reachedFieldNote(activeFieldNote, flight.x, flight.y, flight.z, 125 * look.scale)) {
     fieldNotesKept += 1
     const worldEvent = worldEventForObjective(fieldNotesKept - 1, worldSeed)
     noteCountReadout.textContent = `${String(fieldNotesKept).padStart(2, '0')} KEPT`
@@ -655,16 +873,197 @@ function updateFieldNote(now: number): void {
     lastNoteRange = 'LOOK UP'
     activeFieldNote = null
     waypointRing.visible = false
+    resetPersuasionVisuals()
     startCloudCelebration(now, worldEvent)
     nextFieldNoteAt = now + 11000
   }
 }
 
 beginFieldNote()
+
+const towerGroup = new THREE.Group()
+const waterfallGroup = new THREE.Group()
+scene.add(towerGroup, waterfallGroup)
+let activeTowers: TowerSite[] = []
+const towerShaftMaterial = new THREE.MeshStandardMaterial({ color: 0xd8d2c4, roughness: 0.85, flatShading: true })
+const towerBandMaterial = new THREE.MeshStandardMaterial({ color: 0xc9462f, roughness: 0.8, flatShading: true })
+const towerLightMaterial = new THREE.MeshBasicMaterial({ color: 0xff3b2f })
+const towerLightGeometry = new THREE.SphereGeometry(5, 8, 6)
+const waterfallMistGeometry = new THREE.SphereGeometry(1, 9, 6)
+const waterfallMistMaterial = new THREE.MeshBasicMaterial({ color: 0xeaf6f2, transparent: true, opacity: 0.32, depthWrite: false })
+const waterfallMaterial = new THREE.ShaderMaterial({
+  transparent: true,
+  depthWrite: false,
+  side: THREE.DoubleSide,
+  uniforms: { uTime: { value: 0 } },
+  vertexShader: `
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `,
+  fragmentShader: `
+    uniform float uTime;
+    varying vec2 vUv;
+    void main() {
+      float streak = 0.5 + 0.5 * sin(vUv.x * 46.0 + sin(vUv.y * 9.0 - uTime * 2.0) * 1.4);
+      float flow = 0.5 + 0.5 * sin(vUv.y * 38.0 + uTime * 7.0 + vUv.x * 11.0);
+      float edge = smoothstep(0.0, 0.18, vUv.x) * (1.0 - smoothstep(0.82, 1.0, vUv.x));
+      vec3 color = mix(vec3(0.58, 0.82, 0.86), vec3(0.97, 1.0, 1.0), streak * 0.6 + flow * 0.4);
+      gl_FragColor = vec4(color, edge * (0.62 + streak * 0.3));
+      #include <colorspace_fragment>
+    }
+  `,
+})
+const waterfallMists: THREE.Mesh[] = []
+
+function createTower(site: TowerSite): THREE.Group {
+  const group = new THREE.Group()
+  const height = site.top - site.base
+  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(site.radius * 0.62, site.radius, height, 10), towerShaftMaterial)
+  shaft.position.y = height / 2
+  group.add(shaft)
+  for (let index = 0; index < 4; index += 1) {
+    const fraction = 0.16 + index * 0.2
+    const band = new THREE.Mesh(new THREE.CylinderGeometry(site.radius * (1 - 0.38 * (fraction + 0.045)) * 1.04, site.radius * (1 - 0.38 * (fraction - 0.045)) * 1.04, height * 0.09, 10), towerBandMaterial)
+    band.position.y = height * fraction
+    group.add(band)
+  }
+  const footing = new THREE.Mesh(new THREE.CylinderGeometry(site.radius * 1.5, site.radius * 1.8, 30, 10), towerShaftMaterial)
+  footing.position.y = 6
+  group.add(footing)
+  const pod = new THREE.Mesh(new THREE.CylinderGeometry(site.radius * 1.55, site.radius * 0.9, 20, 10), towerBandMaterial)
+  pod.position.y = height + 8
+  group.add(pod)
+  const antenna = new THREE.Mesh(new THREE.CylinderGeometry(1.2, 1.8, 80, 6), towerShaftMaterial)
+  antenna.position.y = height + 58
+  group.add(antenna)
+  const light = new THREE.Mesh(towerLightGeometry, towerLightMaterial)
+  light.position.y = height + 100
+  group.add(light)
+  group.position.set(site.x, site.base - 6, site.z)
+  return group
+}
+
+function createWaterfall(site: WaterfallSite): THREE.Group {
+  const group = new THREE.Group()
+  const segments = 20
+  const halfWidth = 24
+  const inward = Math.sign(site.bottomX - site.topX) * 9
+  const positions: number[] = []
+  const uvs: number[] = []
+  const indices: number[] = []
+  for (let index = 0; index <= segments; index += 1) {
+    const amount = index / segments
+    const x = site.topX + (site.bottomX - site.topX) * amount
+    const y = terrainHeight(x, site.topZ) + 7
+    positions.push(x + inward, y, site.topZ - halfWidth, x + inward, y, site.topZ + halfWidth)
+    uvs.push(0, 1 - amount, 1, 1 - amount)
+    if (index < segments) indices.push(index * 2, index * 2 + 1, index * 2 + 2, index * 2 + 1, index * 2 + 3, index * 2 + 2)
+  }
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2))
+  geometry.setIndex(indices)
+  group.add(new THREE.Mesh(geometry, waterfallMaterial))
+  for (let puff = 0; puff < 3; puff += 1) {
+    const mist = new THREE.Mesh(waterfallMistGeometry, waterfallMistMaterial)
+    mist.position.set(site.bottomX + inward * 2 + (puff - 1) * 6, site.bottomY + 14 + puff * 8, site.topZ + (puff - 1) * 14)
+    mist.userData.phase = puff * 2.1
+    mist.userData.base = 34 + puff * 8
+    group.add(mist)
+    waterfallMists.push(mist)
+  }
+  return group
+}
+
+function rebuildObstacles(centerX: number, centerZ: number): void {
+  for (const child of [...towerGroup.children]) {
+    towerGroup.remove(child)
+    child.traverse((part) => {
+      if (part instanceof THREE.Mesh && part.geometry !== towerLightGeometry) part.geometry.dispose()
+    })
+  }
+  for (const child of [...waterfallGroup.children]) {
+    waterfallGroup.remove(child)
+    child.traverse((part) => {
+      if (part instanceof THREE.Mesh && part.geometry !== waterfallMistGeometry) part.geometry.dispose()
+    })
+  }
+  waterfallMists.length = 0
+  activeTowers = generateTowers(centerX, centerZ)
+  for (const site of activeTowers) towerGroup.add(createTower(site))
+  for (const site of generateWaterfalls(centerX, centerZ)) waterfallGroup.add(createWaterfall(site))
+}
+
+function updateObstacles(now: number): void {
+  waterfallMaterial.uniforms.uTime.value = now * 0.001
+  towerLightMaterial.color.setRGB(1, 0.23, 0.18).multiplyScalar(Math.sin(now * 0.004) > -0.2 ? 1 : 0.15)
+  for (const mist of waterfallMists) {
+    const pulse = 1 + Math.sin(now * 0.0016 + mist.userData.phase) * 0.14
+    mist.scale.set(mist.userData.base * pulse, mist.userData.base * 0.7, mist.userData.base * pulse)
+  }
+}
+
 const treeTransform = new THREE.Object3D()
 const foliageColor = new THREE.Color()
 let forestRegionX = Number.NaN
 let forestRegionZ = Number.NaN
+
+interface Destructible {
+  x: number
+  y: number
+  z: number
+  radius: number
+  size: number
+  palette: readonly number[]
+  destroyed: boolean
+  object?: THREE.Object3D
+  destroy: () => void
+}
+
+const destructibles: Destructible[] = []
+const hiddenMatrix = new THREE.Matrix4().makeScale(0, 0, 0)
+const fireDebris = [0xffd27a, 0xff8a3d, 0xff5a2a, 0xffffff] as const
+const woodDebris = [0x8a6a43, 0x674a31, 0xd7c08d, 0xffa04a] as const
+const metalDebris = [0x343b39, 0xb0b7b5, 0xffa04a, 0xffd27a] as const
+const leafDebris = [0x3f7d3a, 0x2d5f2a, 0x725a43, 0x8fbf55] as const
+const rockDebris = [0x81796d, 0x5a554d, 0xa39b8a, 0xffa04a] as const
+
+function hideInstance(mesh: THREE.InstancedMesh, index: number): void {
+  mesh.setMatrixAt(index, hiddenMatrix)
+  mesh.instanceMatrix.needsUpdate = true
+}
+
+function registerTree(tree: ReturnType<typeof generateForest>[number], trunkIndex: number, crownIndex: number, pine: boolean): void {
+  destructibles.push({
+    x: tree.x,
+    y: tree.height + tree.scale * (pine ? 18 : 16),
+    z: tree.z,
+    radius: tree.scale * (pine ? 8 : 11),
+    size: tree.scale * 14,
+    palette: leafDebris,
+    destroyed: false,
+    destroy: () => {
+      hideInstance(forestTrunks, trunkIndex)
+      hideInstance(pine ? forestCrowns : forestBroadleaf, crownIndex)
+    },
+  })
+}
+
+function registerRock(rock: ReturnType<typeof generateRockField>[number], index: number): void {
+  destructibles.push({
+    x: rock.x,
+    y: rock.height + rock.scale * 6,
+    z: rock.z,
+    radius: rock.scale * 10,
+    size: rock.scale * 14,
+    palette: rockDebris,
+    destroyed: false,
+    destroy: () => hideInstance(rockOutcrops, index),
+  })
+}
 
 function updateForest(): void {
   const regionX = Math.round(flight.x / 6000)
@@ -673,7 +1072,9 @@ function updateForest(): void {
   forestRegionX = regionX
   forestRegionZ = regionZ
 
+  rebuildObstacles(regionX * 6000, regionZ * 6000)
   const trees = generateForest(regionX * 6000, regionZ * 6000, treeCapacity)
+  destructibles.length = 0
   let pineCount = 0
   let broadleafCount = 0
   trees.forEach((tree, index) => {
@@ -689,6 +1090,7 @@ function updateForest(): void {
       forestCrowns.setMatrixAt(pineCount, treeTransform.matrix)
       foliageColor.setHSL(0.27 + (tree.scale - 0.65) * 0.018, 0.31, 0.23 + (tree.scale - 0.65) * 0.05)
       forestCrowns.setColorAt(pineCount, foliageColor)
+      registerTree(tree, index, pineCount, true)
       pineCount += 1
     } else {
       treeTransform.position.y = tree.height + tree.scale * 17
@@ -697,6 +1099,7 @@ function updateForest(): void {
       forestBroadleaf.setMatrixAt(broadleafCount, treeTransform.matrix)
       foliageColor.setHSL(0.29 + (tree.scale - 0.65) * 0.018, 0.39, 0.27 + (tree.scale - 0.65) * 0.05)
       forestBroadleaf.setColorAt(broadleafCount, foliageColor)
+      registerTree(tree, index, broadleafCount, false)
       broadleafCount += 1
     }
   })
@@ -718,9 +1121,23 @@ function updateForest(): void {
     rockOutcrops.setMatrixAt(index, treeTransform.matrix)
     foliageColor.setHSL(0.1, 0.08, 0.32 + rock.scale * 0.055)
     rockOutcrops.setColorAt(index, foliageColor)
+    registerRock(rock, index)
   })
   cannonField.clear()
-  for (const site of generateCannons(regionX * 6000, regionZ * 6000, 12)) cannonField.add(createCannon(site))
+  for (const site of generateCannons(regionX * 6000, regionZ * 6000, 12)) {
+    const cannon = createCannon(site)
+    cannonField.add(cannon)
+    destructibles.push({
+      x: site.x,
+      y: site.height + 30 * site.scale,
+      z: site.z,
+      radius: 40 * site.scale,
+      size: 38 * site.scale,
+      palette: metalDebris,
+      destroyed: false,
+      destroy: () => cannonField.remove(cannon),
+    })
+  }
   townGroup.clear()
   carActors.length = 0
   const town = generateSettlement(regionX * 6000, regionZ * 6000)
@@ -738,11 +1155,35 @@ function updateForest(): void {
       road.add(marking)
     }
   }
-  for (const building of town.buildings) townGroup.add(createTownBuilding(building))
+  for (const building of town.buildings) {
+    const house = createTownBuilding(building)
+    townGroup.add(house)
+    destructibles.push({
+      x: building.x,
+      y: building.height + 22 * building.scale,
+      z: building.z,
+      radius: 40 * building.scale,
+      size: 40 * building.scale,
+      palette: woodDebris,
+      destroyed: false,
+      destroy: () => townGroup.remove(house),
+    })
+  }
   for (const car of town.cars) {
     const group = createTownCar(car)
     townGroup.add(group)
     carActors.push({ group, site: car })
+    destructibles.push({
+      x: car.x,
+      y: car.height + 8,
+      z: car.z,
+      radius: 18,
+      size: 20,
+      palette: metalDebris,
+      destroyed: false,
+      object: group,
+      destroy: () => townGroup.remove(group),
+    })
   }
   forestTrunks.count = trees.length
   forestCrowns.count = pineCount
@@ -885,8 +1326,15 @@ function startWorldCelebration(now: number, worldEvent: WorldEvent): void {
   eventSkyHorizon.setHex(worldEvent.skyHorizon)
   eventGroundTint.setHex(worldEvent.groundTint)
   eventWaterTint.setHex(worldEvent.waterTint)
+  momentLabel.textContent = 'FIELD NOTE SAVED'
   momentTitle.textContent = worldEvent.title
-  momentCopy.textContent = `${worldEvent.message} ${plantCelebrationFlowers(now)} emergency flowers have been planted.`
+  if (worldEvent.asteroids) {
+    spawnAsteroidField()
+    momentCopy.textContent = `${worldEvent.message} ${asteroidCapacity} asteroids are now drifting nearby. Shoot them for fun.`
+  } else {
+    clearAsteroidField()
+    momentCopy.textContent = `${worldEvent.message} ${plantCelebrationFlowers(now)} emergency flowers have been planted.`
+  }
   momentToast.setAttribute('aria-hidden', 'false')
   momentToast.classList.add('is-visible')
 }
@@ -897,32 +1345,21 @@ function updateWorldCelebration(now: number): void {
   const elapsed = now - worldCelebrationStartedAt
   const eventMix = THREE.MathUtils.smoothstep(elapsed / 1200, 0, 1)
   ;(terrainMaterial.uniforms.uFestival.value as number) = eventMix
-  skyMaterial.uniforms.uSkyTop.value.copy(baseSkyTop).lerp(eventSkyTop, eventMix)
-  skyMaterial.uniforms.uSkyHorizon.value.copy(baseSkyHorizon).lerp(eventSkyHorizon, eventMix)
-  skyMaterial.uniforms.uNight.value = (activeWorldEvent?.night ?? 0) * eventMix
-  skyMaterial.uniforms.uStorm.value = (activeWorldEvent?.storm ?? 0) * eventMix
-  skyMaterial.uniforms.uAurora.value = (activeWorldEvent?.aurora ?? 0) * eventMix
-  terrainMaterial.uniforms.uEventGround.value.copy(eventGroundTint).lerp(new THREE.Color(0xffffff), 1 - eventMix)
-  terrainMaterial.uniforms.uEventWater.value.copy(eventWaterTint).lerp(new THREE.Color(0xffffff), 1 - eventMix)
-  terrainMaterial.uniforms.uLunar.value = activeWorldEvent?.id === 'lunar-mail' ? eventMix : 0
-  hemisphereLight.intensity = 2.05 * (1 - eventMix * ((activeWorldEvent?.night ?? 0) * 0.66 + (activeWorldEvent?.storm ?? 0) * 0.3))
-  sunlight.intensity = 2.2 * (1 - eventMix * ((activeWorldEvent?.night ?? 0) * 0.9 + (activeWorldEvent?.storm ?? 0) * 0.58))
-  moon.visible = Boolean(activeWorldEvent?.moon && eventMix > 0.08)
   updateCelebrationFlowers(now)
   skyMaterial.uniforms.uSkyTop.value.copy(baseSkyTop).lerp(eventSkyTop, eventMix)
   skyMaterial.uniforms.uSkyHorizon.value.copy(baseSkyHorizon).lerp(eventSkyHorizon, eventMix)
-  skyMaterial.uniforms.uNight.value = (activeWorldEvent?.night ?? 0) * eventMix
-  skyMaterial.uniforms.uStorm.value = (activeWorldEvent?.storm ?? 0) * eventMix
-  skyMaterial.uniforms.uAurora.value = (activeWorldEvent?.aurora ?? 0) * eventMix
+  skyMaterial.uniforms.uNight.value = activeWorldEvent.night * eventMix
+  skyMaterial.uniforms.uStorm.value = activeWorldEvent.storm * eventMix
+  skyMaterial.uniforms.uAurora.value = activeWorldEvent.aurora * eventMix
   terrainMaterial.uniforms.uEventGround.value.copy(eventGroundTint).lerp(neutralEventTint, 1 - eventMix)
   terrainMaterial.uniforms.uEventWater.value.copy(eventWaterTint).lerp(neutralEventTint, 1 - eventMix)
-  terrainMaterial.uniforms.uLunar.value = activeWorldEvent?.id === 'lunar-mail' ? eventMix : 0
-  hemisphereLight.intensity = 2.05 * (1 - eventMix * ((activeWorldEvent?.night ?? 0) * 0.66 + (activeWorldEvent?.storm ?? 0) * 0.3))
-  sunlight.intensity = 2.2 * (1 - eventMix * ((activeWorldEvent?.night ?? 0) * 0.9 + (activeWorldEvent?.storm ?? 0) * 0.58))
-  moon.visible = Boolean(activeWorldEvent?.moon && eventMix > 0.08)
-  cloudMaterial.color.setHex(activeWorldEvent?.storm ? 0x8796a2 : 0xf3f0e4)
-  cloudMaterial.opacity = 0.8 - eventMix * ((activeWorldEvent?.storm ?? 0) * 0.18)
-  momentToast.classList.toggle('is-visible', worldCelebrationActive && elapsed < 4800)
+  terrainMaterial.uniforms.uLunar.value = activeWorldEvent.id === 'lunar-mail' ? eventMix : 0
+  hemisphereLight.intensity = 2.05 * (1 - eventMix * (activeWorldEvent.night * 0.66 + activeWorldEvent.storm * 0.3))
+  sunlight.intensity = 2.2 * (1 - eventMix * (activeWorldEvent.night * 0.9 + activeWorldEvent.storm * 0.58))
+  moon.visible = Boolean(activeWorldEvent.moon && eventMix > 0.08)
+  cloudMaterial.color.setHex(activeWorldEvent.storm ? 0x8796a2 : 0xf3f0e4)
+  cloudMaterial.opacity = 0.8 - eventMix * (activeWorldEvent.storm * 0.18)
+  momentToast.classList.toggle('is-visible', (worldCelebrationActive && elapsed < 4800) || now < persuasionToastUntil)
 
   if (elapsed >= 10500 && worldCelebrationActive) {
     worldCelebrationActive = false
@@ -1018,6 +1455,8 @@ interface TrafficActor {
   spawn: ReturnType<typeof generateFlyingThings>[number]
   distance: number
   wings: Array<{ left: THREE.Group; right: THREE.Group; phase: number }>
+  popped: boolean
+  poppedAt: number
 }
 
 const birdMaterial = new THREE.MeshStandardMaterial({ color: 0x34453c, roughness: 0.85, flatShading: true, side: THREE.DoubleSide })
@@ -1195,11 +1634,15 @@ function updateTraffic(delta: number, now: number): void {
       model.group.scale.setScalar(spawn.kind === 'birds' ? 1.6 : spawn.kind === 'airplane' ? 0.8 : spawn.kind === 'kite' ? 1.25 : 1)
       model.group.rotation.y = spawn.heading
       scene.add(model.group)
-      return { group: model.group, wings: model.wings, spawn, distance: 0 }
+      return { group: model.group, wings: model.wings, spawn, distance: 0, popped: false, poppedAt: 0 }
     })
   }
 
   for (const actor of trafficActors) {
+    if (actor.popped) {
+      if (now - actor.poppedAt > TARGET_RESPAWN_DELAY) respawnTrafficActor(actor)
+      else continue
+    }
     actor.distance = Math.min(actor.distance + actor.spawn.speed * delta, 11200)
     const directionX = -Math.sin(actor.spawn.heading)
     const directionZ = -Math.cos(actor.spawn.heading)
@@ -1223,10 +1666,415 @@ function updateTraffic(delta: number, now: number): void {
   }
 }
 
+function respawnTrafficActor(actor: TrafficActor): void {
+  const angle = random() * Math.PI * 2
+  const radius = 2400 + random() * 3200
+  actor.spawn.x = flight.x + Math.cos(angle) * radius
+  actor.spawn.z = flight.z - 1200 - random() * 4000
+  actor.distance = 0
+  actor.popped = false
+  actor.group.visible = true
+}
+
+const SHOT_COOLDOWN = 260
+const PROJECTILE_SPEED = 640
+const PROJECTILE_LIFETIME = 2400
+const TARGET_RESPAWN_DELAY = 4200
+
+interface Projectile {
+  mesh: THREE.Mesh
+  velocity: THREE.Vector3
+  spawnedAt: number
+}
+
+const projectileGeometry = new THREE.SphereGeometry(2.2, 8, 6)
+const projectileMaterial = new THREE.MeshBasicMaterial({ color: 0xfff1b0, toneMapped: false })
+const activeProjectiles: Projectile[] = []
+let lastShotAt = -Infinity
+
+const popFlashCount = 24
+const popFlashSpawnedAt = new Float64Array(popFlashCount).fill(-Infinity)
+const popFlashSize = new Float32Array(popFlashCount)
+const popFlashes: THREE.Sprite[] = Array.from({ length: popFlashCount }, () => {
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTexture, color: 0xffd27a, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false }))
+  scene.add(sprite)
+  return sprite
+})
+let nextPopFlash = 0
+const POP_FLASH_DURATION = 520
+
+function spawnPopFlash(position: THREE.Vector3, size: number, color = 0xffd27a): void {
+  const flashIndex = nextPopFlash
+  nextPopFlash = (nextPopFlash + 1) % popFlashCount
+  popFlashSpawnedAt[flashIndex] = performance.now()
+  popFlashSize[flashIndex] = size
+  popFlashes[flashIndex].position.copy(position)
+  popFlashes[flashIndex].material.color.setHex(color)
+}
+
+function updatePopFlashes(now: number): void {
+  for (let index = 0; index < popFlashCount; index += 1) {
+    const age = now - popFlashSpawnedAt[index]
+    const sprite = popFlashes[index]
+    if (age < 0 || age > POP_FLASH_DURATION) {
+      sprite.material.opacity = 0
+      continue
+    }
+    const progress = age / POP_FLASH_DURATION
+    sprite.material.opacity = (1 - progress) ** 1.5
+    sprite.scale.setScalar(popFlashSize[index] * (0.5 + progress * 1.3))
+  }
+}
+
+interface DebrisParticle {
+  alive: boolean
+  smoke: boolean
+  position: THREE.Vector3
+  velocity: THREE.Vector3
+  life: number
+  maxLife: number
+  size: number
+  gravity: number
+  spin: number
+  rotation: number
+  color: THREE.Color
+}
+
+const debrisCapacity = 480
+const debrisMesh = new THREE.InstancedMesh(new THREE.TetrahedronGeometry(1), new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: false }), debrisCapacity)
+debrisMesh.frustumCulled = false
+const debrisParticles: DebrisParticle[] = Array.from({ length: debrisCapacity }, () => ({
+  alive: false,
+  smoke: false,
+  position: new THREE.Vector3(),
+  velocity: new THREE.Vector3(),
+  life: 0,
+  maxLife: 1,
+  size: 1,
+  gravity: 0,
+  spin: 0,
+  rotation: 0,
+  color: new THREE.Color(),
+}))
+for (let index = 0; index < debrisCapacity; index += 1) {
+  debrisMesh.setMatrixAt(index, hiddenMatrix)
+  debrisMesh.setColorAt(index, debrisParticles[index].color)
+}
+scene.add(debrisMesh)
+let nextDebris = 0
+const debrisDummy = new THREE.Object3D()
+const debrisColor = new THREE.Color()
+const charcoal = new THREE.Color(0x1a1612)
+const debrisVelocity = new THREE.Vector3()
+
+function spawnDebris(position: THREE.Vector3, velocity: THREE.Vector3, size: number, life: number, color: number, gravity: number, smoke: boolean): void {
+  const particle = debrisParticles[nextDebris]
+  nextDebris = (nextDebris + 1) % debrisCapacity
+  particle.alive = true
+  particle.smoke = smoke
+  particle.position.copy(position)
+  particle.velocity.copy(velocity)
+  particle.size = size
+  particle.life = life
+  particle.maxLife = life
+  particle.gravity = gravity
+  particle.spin = (Math.random() - 0.5) * 14
+  particle.rotation = Math.random() * Math.PI * 2
+  particle.color.setHex(color)
+}
+
+function updateDebris(delta: number): void {
+  let touched = false
+  for (let index = 0; index < debrisCapacity; index += 1) {
+    const particle = debrisParticles[index]
+    if (!particle.alive) continue
+    particle.life -= delta
+    touched = true
+    if (particle.life <= 0) {
+      particle.alive = false
+      debrisMesh.setMatrixAt(index, hiddenMatrix)
+      continue
+    }
+    particle.velocity.y -= particle.gravity * delta
+    particle.velocity.multiplyScalar(Math.max(0, 1 - (particle.smoke ? 1.2 : 0.5) * delta))
+    particle.position.addScaledVector(particle.velocity, delta)
+    particle.rotation += particle.spin * delta
+    const remaining = particle.life / particle.maxLife
+    const scale = particle.smoke
+      ? particle.size * 0.55 * (2.4 - 1.6 * remaining) * Math.min(1, remaining * 4)
+      : particle.size * (0.35 + 0.65 * remaining)
+    debrisDummy.position.copy(particle.position)
+    debrisDummy.rotation.set(particle.rotation, particle.rotation * 0.7, 0)
+    debrisDummy.scale.setScalar(scale)
+    debrisDummy.updateMatrix()
+    debrisMesh.setMatrixAt(index, debrisDummy.matrix)
+    debrisColor.copy(particle.color)
+    if (!particle.smoke) debrisColor.lerp(charcoal, 1 - remaining)
+    debrisMesh.setColorAt(index, debrisColor)
+  }
+  if (touched) {
+    debrisMesh.instanceMatrix.needsUpdate = true
+    if (debrisMesh.instanceColor) debrisMesh.instanceColor.needsUpdate = true
+  }
+}
+
+function explode(position: THREE.Vector3, size: number, palette: readonly number[] = fireDebris): void {
+  spawnPopFlash(position, size * 3.4, 0xffd27a)
+  spawnPopFlash(position, size * 2.2, 0xff6a2a)
+  const chunks = Math.min(36, Math.round(14 + size * 0.5))
+  for (let index = 0; index < chunks; index += 1) {
+    debrisVelocity.set(Math.random() - 0.5, Math.random() - 0.35, Math.random() - 0.5).normalize().multiplyScalar(40 + Math.random() * size * 3.5)
+    spawnDebris(position, debrisVelocity, size * (0.08 + Math.random() * 0.12), 0.9 + Math.random() * 0.9, palette[index % palette.length], 70, false)
+  }
+  for (let index = 0; index < 9; index += 1) {
+    debrisVelocity.set((Math.random() - 0.5) * 30, 12 + Math.random() * 30, (Math.random() - 0.5) * 30)
+    spawnDebris(position, debrisVelocity, size * 0.4, 1.6 + Math.random() * 1.2, 0x4a4742, -8, true)
+  }
+}
+
+const trafficHitRadius: Record<string, number> = { balloon: 62, kite: 46, airplane: 34, glider: 38, birds: 44 }
+const trafficExplosionSize: Record<string, number> = { balloon: 60, kite: 38, airplane: 46, glider: 46, birds: 30 }
+const trafficPalette: Record<string, readonly number[]> = {
+  balloon: [0xc7543f, 0xd99f52, 0xff8a3d, 0xffd27a],
+  kite: [0xd2a6dc, 0xff4fa3, 0xffd27a, 0xffffff],
+  airplane: [0xd76c42, 0xe9e3d2, 0xffa04a, 0x343b39],
+  glider: [0xe9e3d2, 0xc59d68, 0xffa04a, 0xffd27a],
+  birds: [0x34453c, 0x8fbf55, 0xffd27a, 0xffffff],
+}
+
+const DAMAGE_DURATION = 1400
+let damageUntil = 0
+const damageForward = new THREE.Vector3()
+const damageSmokeVelocity = new THREE.Vector3()
+const damageSmokePosition = new THREE.Vector3()
+let damageCooldownUntil = 0
+const projectileStart = new THREE.Vector3()
+const hitCenter = new THREE.Vector3()
+
+function damagePlayer(now: number): void {
+  if (now < damageCooldownUntil) return
+  damageUntil = now + DAMAGE_DURATION
+  damageCooldownUntil = now + 1200
+  damageSmokePosition.set(flight.x, flight.y, flight.z)
+  for (let spark = 0; spark < 8; spark += 1) {
+    damageSmokeVelocity.set((Math.random() - 0.5) * 70, (Math.random() - 0.2) * 50, (Math.random() - 0.5) * 70)
+    spawnDebris(damageSmokePosition, damageSmokeVelocity, 1.6 + Math.random() * 1.2, 0.35 + Math.random() * 0.35, 0xffb347, -30, false)
+  }
+}
+
+// The glider keeps a thin side trail so the cue never covers the view ahead.
+function updateDamage(now: number): void {
+  if (now < damageUntil && !paused && Math.random() < 0.5) {
+    damageForward.set(0, 0, -1).applyQuaternion(glider.quaternion)
+    damageSmokePosition.set(Math.random() < 0.5 ? -9 : 9, -1, 4).applyQuaternion(glider.quaternion).add(glider.position)
+    damageSmokeVelocity.set(0, 4 + Math.random() * 5, 0).addScaledVector(damageForward, -14)
+    spawnDebris(damageSmokePosition, damageSmokeVelocity, 2.4 + Math.random() * 1.2, 0.9, 0x4a4742, -3, true)
+  }
+}
+
+function checkPlayerCollisions(now: number): void {
+  for (const actor of trafficActors) {
+    if (actor.popped || !actor.group.visible) continue
+    const radius = trafficHitRadius[actor.spawn.kind] + 18
+    const center = actor.group.position
+    if ((center.x - flight.x) ** 2 + (center.y - flight.y) ** 2 + (center.z - flight.z) ** 2 < radius * radius) {
+      popTrafficActor(actor, now)
+      damagePlayer(now)
+      return
+    }
+  }
+  if (!asteroidsActive) return
+  for (const asteroid of asteroidStates) {
+    if (asteroid.popped) continue
+    const radius = asteroid.scale * 1.15 + 18
+    const center = asteroid.position
+    if ((center.x - flight.x) ** 2 + (center.y - flight.y) ** 2 + (center.z - flight.z) ** 2 < radius * radius) {
+      popAsteroid(asteroid, now)
+      damagePlayer(now)
+      return
+    }
+  }
+}
+
+const asteroidCapacity = 30
+const asteroidGeometry = new THREE.IcosahedronGeometry(1, 0)
+const asteroidMaterial = new THREE.MeshStandardMaterial({ color: 0x716b62, roughness: 1, flatShading: true })
+const asteroidField = new THREE.InstancedMesh(asteroidGeometry, asteroidMaterial, asteroidCapacity)
+asteroidField.count = 0
+scene.add(asteroidField)
+
+interface AsteroidState {
+  position: THREE.Vector3
+  velocity: THREE.Vector3
+  scale: number
+  spin: number
+  rotation: number
+  popped: boolean
+  poppedAt: number
+}
+
+let asteroidStates: AsteroidState[] = []
+let asteroidsActive = false
+const asteroidTransform = new THREE.Object3D()
+
+function createAsteroidState(center: THREE.Vector3): AsteroidState {
+  const angle = random() * Math.PI * 2
+  const radius = 400 + random() * 2400
+  return {
+    position: new THREE.Vector3(
+      center.x + Math.cos(angle) * radius,
+      center.y + (random() - 0.5) * 1400,
+      center.z + Math.sin(angle) * radius,
+    ),
+    velocity: new THREE.Vector3((random() - 0.5) * 22, (random() - 0.5) * 6, (random() - 0.5) * 22),
+    scale: 10 + random() * 34,
+    spin: (random() - 0.5) * 1.4,
+    rotation: random() * Math.PI * 2,
+    popped: false,
+    poppedAt: 0,
+  }
+}
+
+function spawnAsteroidField(): void {
+  const center = new THREE.Vector3(flight.x, flight.y, flight.z)
+  asteroidStates = Array.from({ length: asteroidCapacity }, () => createAsteroidState(center))
+  asteroidsActive = true
+}
+
+function clearAsteroidField(): void {
+  asteroidsActive = false
+  asteroidStates = []
+  asteroidField.count = 0
+}
+
+function updateAsteroids(now: number, delta: number): void {
+  if (!asteroidsActive) return
+
+  asteroidStates.forEach((asteroid, index) => {
+    if (asteroid.popped) {
+      if (now - asteroid.poppedAt > TARGET_RESPAWN_DELAY) {
+        Object.assign(asteroid, createAsteroidState(new THREE.Vector3(flight.x, flight.y, flight.z)))
+      } else {
+        asteroidTransform.position.set(0, -100000, 0)
+        asteroidTransform.scale.setScalar(0)
+        asteroidTransform.updateMatrix()
+        asteroidField.setMatrixAt(index, asteroidTransform.matrix)
+        return
+      }
+    }
+
+    asteroid.position.addScaledVector(asteroid.velocity, delta)
+    asteroid.rotation += asteroid.spin * delta
+    const distanceFromPlayer = Math.hypot(asteroid.position.x - flight.x, asteroid.position.y - flight.y, asteroid.position.z - flight.z)
+    if (distanceFromPlayer > 4200) {
+      Object.assign(asteroid, createAsteroidState(new THREE.Vector3(flight.x, flight.y, flight.z)))
+    }
+
+    asteroidTransform.position.copy(asteroid.position)
+    asteroidTransform.rotation.set(asteroid.rotation, asteroid.rotation * 0.6, asteroid.rotation * 0.3)
+    asteroidTransform.scale.setScalar(asteroid.scale)
+    asteroidTransform.updateMatrix()
+    asteroidField.setMatrixAt(index, asteroidTransform.matrix)
+  })
+  asteroidField.count = asteroidCapacity
+  asteroidField.instanceMatrix.needsUpdate = true
+}
+
+function fireProjectile(now: number): void {
+  if (now - lastShotAt < SHOT_COOLDOWN) return
+  lastShotAt = now
+  const mesh = new THREE.Mesh(projectileGeometry, projectileMaterial)
+  const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(glider.quaternion)
+  mesh.position.set(flight.x, flight.y, flight.z).addScaledVector(forward, 16)
+  scene.add(mesh)
+  activeProjectiles.push({ mesh, velocity: forward.clone().multiplyScalar(PROJECTILE_SPEED + flight.speed), spawnedAt: now })
+}
+
+function popTrafficActor(actor: TrafficActor, now: number): void {
+  actor.popped = true
+  actor.poppedAt = now
+  actor.group.visible = false
+  explode(actor.group.position, trafficExplosionSize[actor.spawn.kind], trafficPalette[actor.spawn.kind])
+  targetsPopped += 1
+  targetsPoppedReadout.textContent = String(targetsPopped)
+}
+
+function popAsteroid(asteroid: AsteroidState, now: number): void {
+  asteroid.popped = true
+  asteroid.poppedAt = now
+  explode(asteroid.position, asteroid.scale * 2.2, rockDebris)
+  targetsPopped += 1
+  targetsPoppedReadout.textContent = String(targetsPopped)
+}
+
+function destructibleCenter(target: Destructible): THREE.Vector3 {
+  return target.object ? hitCenter.copy(target.object.position) : hitCenter.set(target.x, target.y, target.z)
+}
+
+function destroyDestructible(target: Destructible): void {
+  target.destroyed = true
+  explode(destructibleCenter(target), target.size, target.palette)
+  target.destroy()
+  targetsPopped += 1
+  targetsPoppedReadout.textContent = String(targetsPopped)
+}
+
+function updateProjectiles(now: number, delta: number): void {
+  for (let index = activeProjectiles.length - 1; index >= 0; index -= 1) {
+    const projectile = activeProjectiles[index]
+    if (now - projectile.spawnedAt > PROJECTILE_LIFETIME) {
+      scene.remove(projectile.mesh)
+      activeProjectiles.splice(index, 1)
+      continue
+    }
+    projectileStart.copy(projectile.mesh.position)
+    projectile.mesh.position.addScaledVector(projectile.velocity, delta)
+    const end = projectile.mesh.position
+
+    let hit = false
+    for (const actor of trafficActors) {
+      if (actor.popped || !actor.group.visible) continue
+      const center = actor.group.position
+      if (segmentHitsSphere(projectileStart.x, projectileStart.y, projectileStart.z, end.x, end.y, end.z, center.x, center.y, center.z, trafficHitRadius[actor.spawn.kind])) {
+        popTrafficActor(actor, now)
+        hit = true
+        break
+      }
+    }
+    if (!hit && asteroidsActive) {
+      for (const asteroid of asteroidStates) {
+        if (asteroid.popped) continue
+        const center = asteroid.position
+        if (segmentHitsSphere(projectileStart.x, projectileStart.y, projectileStart.z, end.x, end.y, end.z, center.x, center.y, center.z, asteroid.scale * 1.3)) {
+          popAsteroid(asteroid, now)
+          hit = true
+          break
+        }
+      }
+    }
+    if (!hit) {
+      for (const target of destructibles) {
+        if (target.destroyed) continue
+        const center = destructibleCenter(target)
+        if (segmentHitsSphere(projectileStart.x, projectileStart.y, projectileStart.z, end.x, end.y, end.z, center.x, center.y, center.z, target.radius + 3)) {
+          destroyDestructible(target)
+          hit = true
+          break
+        }
+      }
+    }
+    if (hit) {
+      scene.remove(projectile.mesh)
+      activeProjectiles.splice(index, 1)
+    }
+  }
+}
+
 const pressedKeys = new Set<string>()
 let touchRoll = 0
 let touchPitch = 0
 let touchBoost = false
+let touchFire = false
 let paused = false
 
 function controlValue(negative: string[], positive: string[], touch: number): number {
@@ -1246,6 +2094,11 @@ function setPaused(value: boolean): void {
 function resetFlight(): void {
   Object.assign(flight, createFlightState())
   resetFieldNotes()
+  targetsPopped = 0
+  targetsPoppedReadout.textContent = '0'
+  damageUntil = 0
+  damageCooldownUntil = 0
+  for (const projectile of activeProjectiles.splice(0)) scene.remove(projectile.mesh)
   setPaused(false)
 }
 
@@ -1260,6 +2113,15 @@ const releaseBoost = () => { touchBoost = false }
 boostButton.addEventListener('pointerup', releaseBoost)
 boostButton.addEventListener('pointercancel', releaseBoost)
 boostButton.addEventListener('lostpointercapture', releaseBoost)
+fireButton.addEventListener('pointerdown', (event) => {
+  event.preventDefault()
+  fireButton.setPointerCapture(event.pointerId)
+  touchFire = true
+})
+const releaseFire = () => { touchFire = false }
+fireButton.addEventListener('pointerup', releaseFire)
+fireButton.addEventListener('pointercancel', releaseFire)
+fireButton.addEventListener('lostpointercapture', releaseFire)
 
 const touchButtons: Array<[string, number, number]> = [
   ['bank-left', -1, 0],
@@ -1288,7 +2150,8 @@ for (const [id, roll, pitch] of touchButtons) {
 window.addEventListener('keydown', (event) => {
   const controls = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'KeyA', 'KeyD', 'KeyW', 'KeyS']
   const boostControls = ['Space', 'ShiftLeft', 'ShiftRight']
-  if (controls.includes(event.code) || boostControls.includes(event.code)) {
+  const fireControls = ['KeyF']
+  if (controls.includes(event.code) || boostControls.includes(event.code) || fireControls.includes(event.code)) {
     event.preventDefault()
     pressedKeys.add(event.code)
   }
@@ -1301,6 +2164,7 @@ window.addEventListener('blur', () => {
   touchRoll = 0
   touchPitch = 0
   touchBoost = false
+  touchFire = false
 })
 
 function updateReadouts(): void {
@@ -1315,7 +2179,11 @@ function updateReadouts(): void {
   const boostHeld = touchBoost || pressedKeys.has('Space') || pressedKeys.has('ShiftLeft') || pressedKeys.has('ShiftRight')
   boostButton.setAttribute('aria-pressed', boostHeld.toString())
   boostButton.classList.toggle('is-active', flight.boost > 0.15)
-  document.querySelector('.flight-status span:last-child')!.textContent = paused ? 'PAUSED' : flight.boost > 0.5 ? 'BOOSTING' : 'IN THE AIR'
+  const damaged = !paused && performance.now() < damageUntil
+  flightStatus.classList.toggle('is-damaged', damaged)
+  dataLive.classList.toggle('is-damaged', damaged)
+  dataLive.textContent = damaged ? 'HULL HIT' : 'LIVE'
+  flightStatus.lastElementChild!.textContent = paused ? 'PAUSED' : damaged ? 'DAMAGED' : flight.boost > 0.5 ? 'BOOSTING' : 'IN THE AIR'
 }
 
 let previousFrame = performance.now()
@@ -1324,11 +2192,12 @@ function render(now: number): void {
   previousFrame = now
 
   if (!paused) {
-    stepFlight(flight, {
+    const scraped = stepFlight(flight, {
       roll: controlValue(['ArrowLeft', 'KeyA'], ['ArrowRight', 'KeyD'], touchRoll),
       pitch: controlValue(['ArrowDown', 'KeyS'], ['ArrowUp', 'KeyW'], touchPitch),
       boost: touchBoost || pressedKeys.has('Space') || pressedKeys.has('ShiftLeft') || pressedKeys.has('ShiftRight'),
     }, delta)
+    if (scraped || resolveTowerCollision(flight, activeTowers)) damagePlayer(now)
   }
 
   glider.position.set(flight.x, flight.y, flight.z)
@@ -1340,6 +2209,14 @@ function render(now: number): void {
   ;(terrainMaterial.uniforms.uOffset.value as THREE.Vector2).set(terrainOriginX, terrainOriginZ)
   updateForest()
   if (!paused) updateTownCars(now)
+  if (!paused) {
+    if (touchFire || pressedKeys.has('KeyF')) fireProjectile(now)
+    updateProjectiles(now, delta)
+    updateAsteroids(now, delta)
+  }
+  updatePopFlashes(now)
+  updateDebris(delta)
+  updateDamage(now)
 
   const cameraOffset = new THREE.Vector3(0, 13, 58).applyQuaternion(glider.quaternion)
   const desiredCameraPosition = glider.position.clone().add(cameraOffset)
@@ -1364,10 +2241,12 @@ function render(now: number): void {
   }
 
   updateTraffic(delta, now)
+  if (!paused) checkPlayerCollisions(now)
   updateFieldNote(now)
   updateWorldCelebration(now)
   updateEventWeather(delta)
   updateReadouts()
+  updateObstacles(now)
   renderer.render(scene, camera)
   requestAnimationFrame(render)
 }

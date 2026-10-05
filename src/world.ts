@@ -12,11 +12,27 @@ export function setWorldSeed(seed: number): void {
   worldSeed = seed >>> 0
 }
 
-function hash(x: number, z: number): number {
-  const offsetX = (worldSeed & 0xffff) * 0.0137
-  const offsetZ = (worldSeed >>> 16) * 0.0171
-  const value = Math.sin((x + offsetX) * 127.1 + (z + offsetZ) * 311.7) * 43758.5453
+export function worldSeedOffset(): [number, number] {
+  return [(worldSeed & 0xffff) * 0.0137, (worldSeed >>> 16) * 0.0171]
+}
+
+function fract(value: number): number {
   return value - Math.floor(value)
+}
+
+// Sine-free hash that the terrain shader mirrors, so GPU and CPU terrain match.
+function hash(x: number, z: number): number {
+  const [offsetX, offsetZ] = worldSeedOffset()
+  const px = (((x + offsetX) % 256) + 256) % 256
+  const pz = (((z + offsetZ) % 256) + 256) % 256
+  let a = fract(px * 0.1031)
+  let b = fract(pz * 0.1031)
+  let c = a
+  const shift = a * (b + 33.33) + b * (c + 33.33) + c * (a + 33.33)
+  a += shift
+  b += shift
+  c += shift
+  return fract((a + b) * c)
 }
 
 function smooth(value: number): number {
@@ -38,13 +54,75 @@ function smoothstep(edge0: number, edge1: number, value: number): number {
   return amount * amount * (3 - 2 * amount)
 }
 
+export const MASSIF_CELL = 8000
+export const CANYON_LANE = 6400
+export const CANYON_FLOOR_HALF = 90
+export const CANYON_WALL_HALF = 230
+
+export interface Massif {
+  x: number
+  z: number
+  radius: number
+  peak: number
+}
+
+export function massifInCell(cellX: number, cellZ: number): Massif | null {
+  if (hash(cellX + 301.1, cellZ + 57.3) < 0.55) return null
+  return {
+    x: (cellX + 0.3 + hash(cellX + 12.7, cellZ + 401.9) * 0.4) * MASSIF_CELL,
+    z: (cellZ + 0.3 + hash(cellX + 88.2, cellZ + 19.4) * 0.4) * MASSIF_CELL,
+    radius: 1000 + hash(cellX + 142.6, cellZ + 7.7) * 600,
+    peak: 1400 + hash(cellX + 63.9, cellZ + 233.1) * 1200,
+  }
+}
+
+export interface CanyonLane {
+  center: number
+  phase: number
+  lane: number
+}
+
+export function canyonInLane(lane: number): CanyonLane | null {
+  if (hash(lane + 411.3, 9.7) < 0.45) return null
+  return {
+    center: (lane + 0.3 + hash(lane + 5.1, 77.7) * 0.4) * CANYON_LANE,
+    phase: hash(lane + 29.4, 3.3) * Math.PI * 2,
+    lane,
+  }
+}
+
+export function canyonCenterX(canyon: CanyonLane, z: number): number {
+  return canyon.center + Math.sin(z * 0.0011 + canyon.phase) * 380
+}
+
+export function canyonPresence(canyon: CanyonLane, z: number): number {
+  return smoothstep(0.38, 0.5, noise(z * 0.00035 + canyon.lane * 7.3, 0.5))
+}
+
 function rawTerrainHeight(x: number, z: number): number {
   const broad = noise(x * 0.00008, z * 0.00008) * 170
   const foothills = noise(x * 0.00022, z * 0.00022) * 110
   const ridgeShape = 1 - Math.abs(noise(x * 0.00058, z * 0.00058) * 2 - 1)
   const ridges = ridgeShape ** 1.7 * 1150
   const detail = noise(x * 0.0024, z * 0.0024) * 36
-  return 35 + broad + foothills + ridges + detail
+  let height = 35 + broad + foothills + ridges + detail
+
+  const massif = massifInCell(Math.floor(x / MASSIF_CELL), Math.floor(z / MASSIF_CELL))
+  if (massif) {
+    const lift = 1 - smoothstep(0, massif.radius, Math.hypot(x - massif.x, z - massif.z))
+    height += lift ** 1.6 * massif.peak * (0.8 + noise(x * 0.003, z * 0.003) * 0.4)
+  }
+
+  const canyon = canyonInLane(Math.floor(x / CANYON_LANE))
+  if (canyon) {
+    const distance = Math.abs(x - canyonCenterX(canyon, z))
+    const presence = canyonPresence(canyon, z)
+    const mesa = (1 - smoothstep(CANYON_WALL_HALF, CANYON_WALL_HALF + 450, distance)) * presence
+    height += (Math.max(height, 430) - height) * mesa
+    const carve = (1 - smoothstep(CANYON_FLOOR_HALF, CANYON_WALL_HALF, distance)) * presence
+    height += (70 + noise(x * 0.004, z * 0.004) * 30 - height) * carve
+  }
+  return height
 }
 
 export interface WaterSample {
@@ -246,6 +324,71 @@ export function generateRockField(centerX: number, centerZ: number, maximum = 42
   }
 
   return rocks
+}
+
+export interface TowerSite {
+  x: number
+  z: number
+  base: number
+  top: number
+  radius: number
+}
+
+export function generateTowers(centerX: number, centerZ: number, maximum = 16): TowerSite[] {
+  const towers: TowerSite[] = []
+  const spacing = 1300
+  const halfSize = 3000
+  const startX = Math.floor((centerX - halfSize) / spacing)
+  const endX = Math.floor((centerX + halfSize) / spacing)
+  const startZ = Math.floor((centerZ - halfSize) / spacing)
+  const endZ = Math.floor((centerZ + halfSize) / spacing)
+
+  for (let cellX = startX; cellX <= endX && towers.length < maximum; cellX += 1) {
+    for (let cellZ = startZ; cellZ <= endZ && towers.length < maximum; cellZ += 1) {
+      if (hash(cellX + 601.3, cellZ + 71.9) < 0.74) continue
+      const x = (cellX + 0.2 + hash(cellX + 17.4, cellZ + 803.1) * 0.6) * spacing
+      const z = (cellZ + 0.2 + hash(cellX + 509.6, cellZ + 33.2) * 0.6) * spacing
+      const base = terrainHeight(x, z)
+      if (base < 90 || base > 1500 || waterCoverage(x, z) > 0.05) continue
+      if (terrainNormalAt(x, z).y < 0.85) continue
+
+      towers.push({ x, z, base, top: base + 380 + hash(cellX + 94.2, cellZ + 612.7) * 420, radius: 16 + hash(cellX + 255.5, cellZ + 40.4) * 10 })
+    }
+  }
+
+  return towers
+}
+
+export interface WaterfallSite {
+  topX: number
+  topZ: number
+  topY: number
+  bottomX: number
+  bottomZ: number
+  bottomY: number
+}
+
+export function generateWaterfalls(centerX: number, centerZ: number, maximum = 6): WaterfallSite[] {
+  const falls: WaterfallSite[] = []
+  const halfSize = 3000
+  const stepZ = 260
+  for (let lane = Math.floor((centerX - halfSize) / CANYON_LANE); lane <= Math.floor((centerX + halfSize) / CANYON_LANE); lane += 1) {
+    const canyon = canyonInLane(lane)
+    if (!canyon) continue
+    for (let cellZ = Math.floor((centerZ - halfSize) / stepZ); cellZ <= Math.floor((centerZ + halfSize) / stepZ) && falls.length < maximum; cellZ += 1) {
+      const z = (cellZ + 0.5) * stepZ
+      if (canyonPresence(canyon, z) < 0.97 || hash(lane + 7.7, cellZ + 151.3) < 0.8) continue
+      const side = hash(lane + 41.5, cellZ + 9.9) < 0.5 ? -1 : 1
+      const centerLine = canyonCenterX(canyon, z)
+      const topX = centerLine + side * (CANYON_WALL_HALF + 12)
+      const bottomX = centerLine + side * (CANYON_FLOOR_HALF + 4)
+      const topY = terrainHeight(topX, z)
+      const bottomY = terrainHeight(bottomX, z)
+      if (topY - bottomY < 250 || waterCoverage(topX, z) > 0.05) continue
+      falls.push({ topX, topZ: z, topY, bottomX, bottomZ: z, bottomY })
+    }
+  }
+  return falls
 }
 
 export interface CannonSite {

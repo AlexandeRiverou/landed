@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "test": "tsx --test src/flight.test.ts src/world.test.ts src/objectives.test.ts src/world-events.test.ts"
+    "test": "tsx --test src/flight.test.ts src/world.test.ts src/objectives.test.ts src/world-events.test.ts src/persuasion.test.ts src/collision.test.ts src/obstacles.test.ts"
   },
   "engines": {
     "node": ">=18"

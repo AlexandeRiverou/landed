@@ -70,7 +70,7 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .flight-status { display: flex; align-items: center; gap: 9px; margin-left: auto; margin-right: 27px; color: #35483f; }
 .status-light, .location-dot { width: 6px; height: 6px; border-radius: 50%; background: #c58a59; box-shadow: 0 0 0 3px rgb(197 138 89 / 17%); }
 .flight-actions { display: flex; align-items: center; gap: 9px; }
-.boost-button, .pause-button, .reset-button {
+.fire-button, .boost-button, .pause-button, .reset-button {
   height: 36px;
   display: inline-flex;
   align-items: center;
@@ -87,6 +87,8 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .reset-button { padding: 0 12px; color: var(--muted-ink); }
 .boost-button { padding: 0 12px; border-color: rgb(123 87 56 / 42%); color: #704e33; }
 .boost-button.is-active { border-color: #80532e; background: #80532e; color: #fff5dd; box-shadow: 0 0 16px rgb(128 83 46 / 32%); }
+.fire-button { padding: 0 12px; border-color: rgb(178 60 45 / 42%); color: #9c3a29; }
+.fire-button.is-active { border-color: #b23c2b; background: #b23c2b; color: #fff2ec; box-shadow: 0 0 16px rgb(178 60 45 / 32%); }
 .pause-icon { display: flex; gap: 3px; height: 11px; }
 .pause-icon i { display: block; width: 2px; height: 11px; background: currentColor; }
 
@@ -164,6 +166,21 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
   to { opacity: 1; transform: translateY(0); }
 }
 
+.flight-status.is-damaged, .flight-status.is-damaged .status-light { color: #b4372a; }
+.flight-status.is-damaged .status-light { background: #d8432f; box-shadow: 0 0 0 3px rgb(216 67 47 / 25%); animation: hull-pulse 420ms ease-in-out infinite; }
+.data-live.is-damaged { color: #b4372a; animation: hull-pulse 420ms ease-in-out infinite; }
+@keyframes hull-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .35; }
+}
+
+.wayfinder.is-pleading { animation: pleading 700ms ease-in-out infinite; }
+@keyframes pleading {
+  0%, 100% { transform: translateX(0) rotate(0); }
+  25% { transform: translateX(-3px) rotate(-.6deg); }
+  75% { transform: translateX(3px) rotate(.6deg); }
+}
+
 @media (pointer: fine) {
   .touch-controls { display: none; }
 }
@@ -178,7 +195,7 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
   .wordmark { min-width: 0; }
   .flight-status { margin-right: 12px; font-size: 8px; }
   .flight-actions { gap: 6px; }
-  .boost-button, .pause-button, .reset-button { height: 33px; padding: 0 9px; font-size: 8px; }
+  .fire-button, .boost-button, .pause-button, .reset-button { height: 33px; padding: 0 9px; font-size: 8px; }
   .view-title { top: 22%; left: 25px; }
   .view-title h1 { font-size: 61px; }
   .location-line { gap: 7px; margin-bottom: 13px; font-size: 8px; }

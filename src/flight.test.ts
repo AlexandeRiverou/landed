@@ -4,6 +4,13 @@ import { createFlightState, stepFlight } from './flight'
 import { highestTerrainAlongPath, terrainHeight } from './world'
 
 describe('flight state', () => {
+  it('reports a cliff scrape when a sheer wall forces the glider upward', () => {
+    const low = createFlightState()
+    low.y = 0
+    assert.equal(stepFlight(low, { roll: 0, pitch: 0, boost: false }, 0.05), true)
+    assert.ok(low.y > terrainHeight(low.x, low.z))
+    assert.equal(stepFlight(createFlightState(), { roll: 0, pitch: 0, boost: false }, 0.05), false)
+  })
   it('cruises forward without input', () => {
     const flight = createFlightState()
     const startZ = flight.z
@@ -79,16 +86,16 @@ describe('flight state', () => {
     assert.ok(flight.bank < 0.2)
   })
 
-  it('builds boost over several seconds, caps speed, then coasts to cruise', () => {
+  it('builds boost over several seconds, caps at a higher speed limit, then coasts to cruise', () => {
     const flight = createFlightState()
     for (let frame = 0; frame < 20; frame += 1) stepFlight(flight, { roll: 0, pitch: 0, boost: true }, 0.05)
     const firstSecondSpeed = flight.speed
-    assert.ok(firstSecondSpeed > 64)
-    assert.ok(firstSecondSpeed < 85)
+    assert.ok(firstSecondSpeed > 95)
+    assert.ok(firstSecondSpeed < 110)
 
     for (let frame = 0; frame < 80; frame += 1) stepFlight(flight, { roll: 0, pitch: 0, boost: true }, 0.05)
     assert.ok(flight.speed > firstSecondSpeed)
-    assert.equal(flight.speed, 128)
+    assert.equal(flight.speed, 192)
 
     for (let frame = 0; frame < 100; frame += 1) stepFlight(flight, { roll: 0, pitch: 0, boost: false }, 0.05)
     assert.equal(flight.speed, 64)

@@ -43,6 +43,21 @@ export function fieldNoteDistance(note: FieldNote, x: number, y: number, z: numb
   return Math.hypot(note.x - x, note.y - y, note.z - z)
 }
 
+export function relocateFieldNote(note: FieldNote, x: number, y: number, z: number, heading: number, range: number): FieldNote {
+  const course = heading + (note.number % 2 === 0 ? 0.1 : -0.1)
+  const targetX = x - Math.sin(course) * range
+  const targetZ = z - Math.cos(course) * range
+  const ground = terrainHeight(targetX, targetZ)
+  return {
+    ...note,
+    x: targetX,
+    y: Math.max(ground + 300, Math.min(ground + 1400, y)),
+    z: targetZ,
+    heading: course,
+    range,
+  }
+}
+
 export function fieldNoteProgress(note: FieldNote, x: number, z: number): number {
   const remaining = Math.hypot(note.x - x, note.z - z)
   return Math.max(0, Math.min(1, 1 - remaining / note.range))

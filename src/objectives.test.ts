@@ -1,6 +1,6 @@
 import * as assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { createFieldNote, fieldNoteBearing, fieldNoteDistance, fieldNoteProgress, reachedFieldNote } from './objectives'
+import { createFieldNote, fieldNoteBearing, fieldNoteDistance, fieldNoteProgress, reachedFieldNote, relocateFieldNote } from './objectives'
 import { terrainHeight } from './world'
 
 describe('Wayfinder field notes', () => {
@@ -35,5 +35,15 @@ describe('Wayfinder field notes', () => {
     const next = createFieldNote(1, 0, 1320, 0, 0)
     assert.notEqual(first.title, next.title)
     assert.notEqual(first.heading, next.heading)
+  })
+
+  it('relocates the same note to a chosen range ahead of the player', () => {
+    const note = createFieldNote(1, 0, 1320, 0, 0)
+    const moved = relocateFieldNote(note, 500, 1200, -300, 0.5, 450)
+    assert.equal(moved.number, note.number)
+    assert.equal(moved.title, note.title)
+    assert.equal(moved.range, 450)
+    assert.ok(Math.abs(Math.hypot(moved.x - 500, moved.z + 300) - 450) < 1e-8)
+    assert.ok(moved.y >= terrainHeight(moved.x, moved.z) + 300)
   })
 })

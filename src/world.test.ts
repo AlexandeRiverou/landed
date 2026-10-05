@@ -35,7 +35,7 @@ describe('terrainHeight', () => {
     const heights = Array.from({ length: 40 }, (_, index) => terrainHeight(index * 180, index * -97))
     assert.ok(heights.every(Number.isFinite))
     assert.ok(Math.min(...heights) >= 35)
-    assert.ok(Math.max(...heights) <= 1600)
+    assert.ok(Math.max(...heights) <= 3600)
     assert.ok(Math.max(...heights) - Math.min(...heights) > 30)
   })
 

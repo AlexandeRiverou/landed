@@ -1,4 +1,4 @@
-export type WorldEventId = 'cloud-party' | 'moonrise' | 'lunar-mail' | 'rain-check' | 'aurora' | 'golden-hour'
+export type WorldEventId = 'cloud-party' | 'moonrise' | 'lunar-mail' | 'rain-check' | 'aurora' | 'golden-hour' | 'asteroid-drift'
 
 export interface WorldEvent {
   id: WorldEventId
@@ -13,6 +13,7 @@ export interface WorldEvent {
   aurora: number
   moon: boolean
   rain: boolean
+  asteroids: boolean
 }
 
 const events: readonly WorldEvent[] = [
@@ -29,6 +30,7 @@ const events: readonly WorldEvent[] = [
     aurora: 0,
     moon: false,
     rain: false,
+    asteroids: false,
   },
   {
     id: 'moonrise',
@@ -43,6 +45,7 @@ const events: readonly WorldEvent[] = [
     aurora: 0,
     moon: true,
     rain: false,
+    asteroids: false,
   },
   {
     id: 'lunar-mail',
@@ -57,6 +60,7 @@ const events: readonly WorldEvent[] = [
     aurora: 0,
     moon: true,
     rain: false,
+    asteroids: false,
   },
   {
     id: 'rain-check',
@@ -71,6 +75,7 @@ const events: readonly WorldEvent[] = [
     aurora: 0,
     moon: false,
     rain: true,
+    asteroids: false,
   },
   {
     id: 'aurora',
@@ -85,6 +90,7 @@ const events: readonly WorldEvent[] = [
     aurora: 1,
     moon: false,
     rain: false,
+    asteroids: false,
   },
   {
     id: 'golden-hour',
@@ -99,6 +105,22 @@ const events: readonly WorldEvent[] = [
     aurora: 0,
     moon: false,
     rain: false,
+    asteroids: false,
+  },
+  {
+    id: 'asteroid-drift',
+    title: 'ORBIT CHANGE APPROVED',
+    message: 'Gravity clocked out early. Mind the rocks.',
+    skyTop: 0x03040c,
+    skyHorizon: 0x121a30,
+    groundTint: 0x87847c,
+    waterTint: 0x4b4f5c,
+    night: 1,
+    storm: 0,
+    aurora: 0,
+    moon: true,
+    rain: false,
+    asteroids: true,
   },
 ]
 

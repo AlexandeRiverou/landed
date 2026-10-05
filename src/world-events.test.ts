@@ -24,5 +24,6 @@ describe('objective world events', () => {
     assert.ok(events.some((event) => event.night > 0 && event.moon))
     assert.ok(events.some((event) => event.rain && event.storm > 0))
     assert.ok(events.some((event) => event.aurora > 0))
+    assert.ok(events.some((event) => event.asteroids))
   })
 })
