@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import { resolveTowerCollision } from './obstacles'
-import { CANYON_WALL_HALF, MASSIF_CELL, canyonCenterX, canyonInLane, canyonPresence, generateTowers, generateWaterfalls, massifInCell, setWorldSeed, terrainHeight, waterCoverage } from './world'
+import { CANYON_WALL_HALF, biomeAt, generateForest, MASSIF_CELL, canyonCenterX, canyonInLane, canyonPresence, generateTowers, generateWaterfalls, massifInCell, setWorldSeed, terrainHeight, waterCoverage } from './world'
 
 const tower = { x: 100, z: 100, base: 200, top: 700, radius: 20 }
 
@@ -21,6 +21,34 @@ describe('resolveTowerCollision', () => {
     const point = { x: 100, y: 400, z: 100 }
     assert.equal(resolveTowerCollision(point, [tower]), tower)
     assert.ok(Math.hypot(point.x - tower.x, point.z - tower.z) >= tower.radius)
+  })
+})
+
+describe('biomes', () => {
+  it('varies across the world with bounded, repeatable weights', () => {
+    setWorldSeed(0x4c414e44)
+    let desert = 0
+    let frost = 0
+    let autumn = 0
+    for (let x = -120000; x <= 120000; x += 2500) {
+      for (let z = -120000; z <= 120000; z += 2500) {
+        const biome = biomeAt(x, z)
+        assert.deepEqual(biome, biomeAt(x, z))
+        for (const weight of [biome.desert, biome.frost, biome.autumn]) assert.ok(weight >= 0 && weight <= 1)
+        desert = Math.max(desert, biome.desert)
+        frost = Math.max(frost, biome.frost)
+        autumn = Math.max(autumn, biome.autumn)
+      }
+    }
+    assert.ok(desert > 0.8 && frost > 0.8 && autumn > 0.8)
+  })
+
+  it('keeps deserts free of trees', () => {
+    setWorldSeed(0x4c414e44)
+    for (let index = 0; index < 30; index += 1) {
+      const trees = generateForest(index * 9000 - 130000, index * 7000 - 100000)
+      assert.ok(trees.every((tree) => biomeAt(tree.x, tree.z).desert <= 0.55))
+    }
   })
 })
 

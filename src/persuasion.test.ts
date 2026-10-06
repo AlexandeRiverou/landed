@@ -93,6 +93,21 @@ describe('objective persuasion', () => {
     assert.equal(state.stage, 0)
   })
 
+  it('nudges less when the player is close and keeps the original pace when far', () => {
+    const idle = createPersuasion(2000)
+    const close = createPersuasion(300)
+    const leaving = createPersuasion(2000)
+    let away = 2000
+    for (let tick = 0; tick < 20; tick += 1) {
+      away += 60
+      stepPersuasion(idle, 2000, 1, seeded(1))
+      stepPersuasion(close, 300, 1, seeded(1))
+      stepPersuasion(leaving, away, 1, seeded(1))
+    }
+    assert.ok(close.ignored < idle.ignored)
+    assert.equal(leaving.ignored, idle.ignored)
+  })
+
   it('reflects applied effects in the ring look', () => {
     const { state } = ignoreEntirely(9)
     const look = persuasionLook(state)

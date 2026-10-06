@@ -124,6 +124,9 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .sightline { top: 49%; left: 50%; display: flex; align-items: center; gap: 7px; transform: translate(-50%, -50%); opacity: .64; }
 .sightline span { width: 13px; height: 1px; background: rgb(244 240 223 / 72%); }
 .sightline i { width: 3px; height: 3px; border: 1px solid rgb(244 240 223 / 80%); border-radius: 50%; }
+.far-arrow { position: absolute; z-index: 3; top: 21%; left: 50%; display: flex; flex-direction: column; align-items: center; gap: 10px; transform: translateX(-50%); opacity: 0; pointer-events: none; transition: opacity 400ms ease; color: #fff3d6; text-shadow: 0 1px 6px rgb(0 0 0 / 55%); font: 700 12px/1 var(--mono, monospace); letter-spacing: .14em; }
+.far-arrow.is-visible { opacity: .92; }
+.far-arrow i { display: block; width: 44px; height: 44px; border-top: 7px solid #ffd28a; border-right: 7px solid #ffd28a; filter: drop-shadow(0 2px 6px rgb(0 0 0 / 55%)); transition: transform 120ms linear; }
 .moment-toast { position: absolute; z-index: 5; top: 49%; left: 50%; display: grid; justify-items: center; gap: 8px; width: min(620px, calc(100% - 36px)); color: #fff6df; text-align: center; opacity: 0; pointer-events: none; transform: translate(-50%, -42%) scale(.94); transition: opacity 320ms ease, transform 420ms cubic-bezier(.2, .8, .2, 1); text-shadow: 0 2px 22px rgb(20 36 32 / 44%); }
 .moment-toast.is-visible { opacity: 1; transform: translate(-50%, -50%) scale(1); }
 .moment-toast > span { color: #ffe0aa; font-family: "SFMono-Regular", Consolas, monospace; font-size: 9px; letter-spacing: 2px; }

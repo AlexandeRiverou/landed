@@ -125,6 +125,22 @@ function rawTerrainHeight(x: number, z: number): number {
   return height
 }
 
+export interface BiomeMix {
+  desert: number
+  frost: number
+  autumn: number
+}
+
+// Large-scale climate bands; the terrain shader mirrors these formulas.
+export function biomeAt(x: number, z: number): BiomeMix {
+  const warmth = noise(x * 0.00009 + 31.7, z * 0.00009 + 9.1)
+  const moisture = noise(x * 0.00009 + 77.3, z * 0.00009 + 51.9)
+  const desert = smoothstep(0.56, 0.7, warmth)
+  const frost = 1 - smoothstep(0.3, 0.44, warmth)
+  const autumn = smoothstep(0.52, 0.66, moisture) * (1 - desert) * (1 - frost)
+  return { desert, frost, autumn }
+}
+
 export interface WaterSample {
   coverage: number
   level: number
@@ -249,6 +265,7 @@ export interface TreePosition {
   scale: number
   rotation: number
   kind: 'pine' | 'broadleaf'
+  autumn: number
 }
 
 export function generateForest(centerX: number, centerZ: number, maximum = 1600): TreePosition[] {
@@ -269,6 +286,9 @@ export function generateForest(centerX: number, centerZ: number, maximum = 1600)
       const height = terrainHeight(x, z)
       if (height < 130 || height > 600 || waterCoverage(x, z) > 0.05) continue
 
+      const biome = biomeAt(x, z)
+      if (biome.desert > 0.55 || hash(cellX + 5.5, cellZ + 6.6) < biome.frost * 0.55) continue
+
       const slope = Math.abs(terrainHeight(x + 18, z) - terrainHeight(x - 18, z))
         + Math.abs(terrainHeight(x, z + 18) - terrainHeight(x, z - 18))
       if (slope > 60) continue
@@ -279,7 +299,8 @@ export function generateForest(centerX: number, centerZ: number, maximum = 1600)
         height,
         scale: 0.65 + hash(cellX + 12.2, cellZ + 451.8) * 1.0,
         rotation: hash(cellX + 421.7, cellZ + 92.3) * Math.PI * 2,
-        kind: hash(cellX + 201.2, cellZ + 88.7) < 0.22 ? 'broadleaf' : 'pine',
+        kind: hash(cellX + 201.2, cellZ + 88.7) < 0.22 && biome.frost < 0.5 ? 'broadleaf' : 'pine',
+        autumn: biome.autumn,
       })
     }
   }

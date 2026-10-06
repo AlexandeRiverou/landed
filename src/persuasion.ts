@@ -19,6 +19,7 @@ export interface PersuasionState {
   ignored: number
   stage: number
   bestDistance: number
+  lastDistance: number
   counts: Record<PersuasionEffect, number>
   color: number
   lastTitle: string
@@ -126,16 +127,26 @@ export const persuasionStageCount = thresholds.length
 
 export function createPersuasion(distance = Number.POSITIVE_INFINITY): PersuasionState {
   const counts = Object.fromEntries(effects.map((effect) => [effect, 0])) as Record<PersuasionEffect, number>
-  return { ignored: 0, stage: 0, bestDistance: distance, counts, color: DEFAULT_RING_COLOR, lastTitle: '' }
+  return { ignored: 0, stage: 0, bestDistance: distance, lastDistance: distance, counts, color: DEFAULT_RING_COLOR, lastTitle: '' }
+}
+
+const CLOSE_RANGE = 500
+
+// Calm when the player is near the ring; unchanged when far away.
+function ignorePace(distance: number, radialSpeed: number): number {
+  if (distance >= CLOSE_RANGE) return 1
+  return radialSpeed > 8 ? 0.6 : 0.3
 }
 
 // Returns the escalation to apply when the player has ignored the ring long enough, otherwise null.
 export function stepPersuasion(state: PersuasionState, distance: number, delta: number, random: () => number): PersuasionEvent | null {
+  const radialSpeed = Number.isFinite(state.lastDistance) && delta > 0 ? (distance - state.lastDistance) / delta : 0
+  state.lastDistance = distance
   if (distance < state.bestDistance - 25) {
     state.bestDistance = distance
     state.ignored = Math.max(0, state.ignored - 4)
   } else {
-    state.ignored += Math.max(0, delta)
+    state.ignored += Math.max(0, delta) * ignorePace(distance, radialSpeed)
   }
 
   const reached = thresholds.filter((threshold) => state.ignored >= threshold).length
@@ -184,4 +195,5 @@ export function persuasionLook(state: PersuasionState): PersuasionLook {
 
 export function resetPersuasionDistance(state: PersuasionState, distance: number): void {
   state.bestDistance = distance
+  state.lastDistance = distance
 }

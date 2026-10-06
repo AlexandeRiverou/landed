@@ -5,6 +5,7 @@ import { createFieldNote, fieldNoteBearing, fieldNoteDistance, fieldNoteProgress
 import { createPersuasion, persuasionLook, resetPersuasionDistance, stepPersuasion, type PersuasionEvent } from './persuasion'
 import { segmentHitsSphere } from './collision'
 import { resolveTowerCollision } from './obstacles'
+import { createEnemy, stepEnemy, type Enemy } from './enemies'
 import { worldEventForObjective, type WorldEvent } from './world-events'
 import { createWorldSeed, generateCannons, generateFlyingThings, generateForest, generateRockField, generateSettlement, generateTowers, generateWaterfalls, setWorldSeed, type TowerSite, type WaterfallSite, terrainGridOrigin, terrainHeight, terrainNormalAt, waterCoverage, worldSeedOffset } from './world'
 
@@ -57,6 +58,7 @@ app.innerHTML = `
     </section>
 
     <div class="sightline" aria-hidden="true"><span></span><i></i><span></span></div>
+    <div class="far-arrow" id="far-arrow" aria-hidden="true"><i id="far-arrow-head"></i><span id="far-arrow-range"></span></div>
     <div class="moment-toast" id="moment-toast" aria-live="polite" aria-hidden="true">
       <span id="moment-label">FIELD NOTE SAVED</span>
       <strong id="moment-title">THE SKY IS SMILING</strong>
@@ -98,6 +100,9 @@ const notePromptReadout = document.querySelector<HTMLParagraphElement>('#note-pr
 const noteRangeReadout = document.querySelector<HTMLSpanElement>('#note-range')!
 const noteProgressReadout = document.querySelector<HTMLSpanElement>('#note-progress')!
 const noteArrowReadout = document.querySelector<HTMLElement>('#note-arrow')!
+const farArrow = document.querySelector<HTMLElement>('#far-arrow')!
+const farArrowHead = document.querySelector<HTMLElement>('#far-arrow-head')!
+const farArrowRange = document.querySelector<HTMLElement>('#far-arrow-range')!
 const momentToast = document.querySelector<HTMLDivElement>('#moment-toast')!
 const momentLabel = document.querySelector<HTMLSpanElement>('#moment-label')!
 const flightStatus = document.querySelector<HTMLElement>('.flight-status')!
@@ -225,6 +230,7 @@ const terrainMaterial = new THREE.ShaderMaterial({
     varying vec3 vNormal;
     varying vec2 vLocal;
     varying vec2 vWorld;
+    varying vec3 vBiome;
 
     float hash(vec2 p) {
       p = mod(p + uSeedOffset, 256.0);
@@ -313,6 +319,11 @@ const terrainMaterial = new THREE.ShaderMaterial({
       vWater = water;
       vVariation = noise(point * 0.0014);
       vFineVariation = noise(point * 0.006);
+      float warmth = noise(point * 0.00009 + vec2(31.7, 9.1));
+      float moisture = noise(point * 0.00009 + vec2(77.3, 51.9));
+      float desertMix = smoothstep(0.56, 0.7, warmth);
+      float frostMix = 1.0 - smoothstep(0.3, 0.44, warmth);
+      vBiome = vec3(desertMix, frostMix, smoothstep(0.52, 0.66, moisture) * (1.0 - desertMix) * (1.0 - frostMix));
       vNormal = normalize(vec3(left - right, 10.0, down - up));
       vec3 displaced = position;
       displaced.y = height;
@@ -331,25 +342,55 @@ const terrainMaterial = new THREE.ShaderMaterial({
     varying vec3 vNormal;
     varying vec2 vLocal;
     varying vec2 vWorld;
+    varying vec3 vBiome;
+    float h21(vec2 p) {
+      vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+      p3 += dot(p3, p3.yzx + 33.33);
+      return fract((p3.x + p3.y) * p3.z);
+    }
+    float vn(vec2 p) {
+      vec2 cell = floor(p);
+      vec2 part = fract(p);
+      part = part * part * (3.0 - 2.0 * part);
+      return mix(mix(h21(cell), h21(cell + vec2(1.0, 0.0)), part.x), mix(h21(cell + vec2(0.0, 1.0)), h21(cell + vec2(1.0, 1.0)), part.x), part.y);
+    }
+    float fbm(vec2 p) {
+      return vn(p) * 0.5 + vn(p * 2.03) * 0.25 + vn(p * 4.01) * 0.125 + vn(p * 8.03) * 0.0625;
+    }
     void main() {
+      float near = 1.0 - smoothstep(1800.0, 5200.0, length(vLocal));
+      float broadTone = vn(vWorld / 420.0);
+      float grain = fbm(vWorld / 11.0);
+      float tuft = vn(vWorld / 3.2);
+      float fields = smoothstep(0.35, 0.75, vn(vWorld / 900.0 + 7.0));
       vec3 grass = mix(vec3(0.045, 0.19, 0.045), vec3(0.17, 0.37, 0.075), vVariation);
+      grass = mix(grass, vec3(0.34, 0.42, 0.12), fields * 0.38 * (0.5 + broadTone * 0.5));
+      grass *= 0.72 + grain * 0.56 + (tuft - 0.5) * 0.28 * near;
       vec3 soil = mix(vec3(0.34, 0.16, 0.065), vec3(0.49, 0.28, 0.11), vFineVariation);
+      grass = mix(grass, vec3(0.78, 0.62, 0.36) * (0.82 + grain * 0.36), vBiome.x);
+      grass = mix(grass, vec3(0.62, 0.34, 0.08) * (0.8 + grain * 0.4), vBiome.z * 0.8);
+      grass = mix(grass, vec3(0.74, 0.8, 0.8) * (0.86 + grain * 0.28), vBiome.y * 0.85);
+      soil = mix(soil, vec3(0.66, 0.4, 0.2), vBiome.x);
+      soil *= 0.78 + fbm(vWorld / 7.0) * 0.46;
+      float strata = 0.5 + 0.5 * sin(vHeight * 0.05 + fbm(vWorld / 160.0) * 5.0);
       vec3 rock = mix(vec3(0.31, 0.29, 0.25), vec3(0.49, 0.43, 0.33), vVariation);
-      vec3 snow = vec3(0.76, 0.84, 0.80);
+      rock *= 0.82 + mix(0.5, strata, near) * 0.18 + (grain - 0.5) * 0.35;
+      vec3 snow = vec3(0.76, 0.84, 0.80) * (0.9 + (grain - 0.5) * 0.18);
       float dryPatches = smoothstep(0.64, 0.84, vFineVariation) * (1.0 - smoothstep(540.0, 790.0, vHeight)) * 0.7;
       float exposedSoil = max(smoothstep(320.0, 650.0, vHeight) * (0.55 + vVariation * 0.45), dryPatches);
       vec3 ground = mix(grass, soil, exposedSoil);
       ground = mix(ground, rock, smoothstep(610.0, 940.0, vHeight));
-      ground = mix(ground, snow, smoothstep(1080.0, 1330.0, vHeight));
+      ground = mix(ground, snow, smoothstep(1080.0 - vBiome.y * 700.0, 1330.0 - vBiome.y * 700.0, vHeight));
       float steepness = 1.0 - smoothstep(0.3, 0.8, normalize(vNormal).y);
       ground = mix(ground, rock * 0.85, steepness * 0.9);
       float ripple = 0.5 + 0.5 * sin(vWorld.x * 0.003 + sin(vWorld.y * 0.002) * 2.0);
       vec3 water = mix(vec3(0.055, 0.25, 0.29), vec3(0.28, 0.55, 0.54), smoothstep(0.56, 0.98, ripple));
+      water *= 0.9 + fbm(vWorld / 26.0) * 0.28;
       ground = mix(ground, water, smoothstep(0.12, 0.8, vWater));
-      float light = 0.42 + 0.78 * max(dot(normalize(vNormal), normalize(vec3(-0.36, 0.86, 0.37))), 0.0);
+      float light = 0.36 + 0.86 * max(dot(normalize(vNormal), normalize(vec3(-0.36, 0.86, 0.37))), 0.0);
       ground *= light;
       float haze = smoothstep(6200.0, 11200.0, length(vLocal));
-      ground = mix(ground, vec3(0.49, 0.65, 0.59), haze * 0.42);
+      ground = mix(ground, vec3(0.49, 0.65, 0.59), haze * 0.34);
       vec3 eventGround = mix(uEventGround, uEventWater, smoothstep(0.12, 0.8, vWater));
       float lunarGray = dot(eventGround, vec3(0.299, 0.587, 0.114));
       eventGround = mix(eventGround, vec3(lunarGray * 0.84), uLunar);
@@ -790,6 +831,7 @@ function updateFieldNote(now: number): void {
     momentToast.setAttribute('aria-hidden', 'true')
   }
   if (!activeFieldNote) {
+    farArrow.classList.remove('is-visible')
     if (now >= nextFieldNoteAt) beginFieldNote()
     else return
   }
@@ -860,6 +902,9 @@ function updateFieldNote(now: number): void {
   }
   const bearing = fieldNoteBearing(activeFieldNote, flight.x, flight.z, flight.heading)
   noteArrowReadout.style.transform = `rotate(${-45 - bearing * 180 / Math.PI}deg)`
+  farArrow.classList.toggle('is-visible', distance > 3500 && !paused)
+  farArrowHead.style.transform = `rotate(${-45 - bearing * 180 / Math.PI}deg)`
+  farArrowRange.textContent = rangeText
   noteProgressReadout.style.transform = `scaleX(${fieldNoteProgress(activeFieldNote, flight.x, flight.z)})`
 
   if (!paused && reachedFieldNote(activeFieldNote, flight.x, flight.y, flight.z, 125 * look.scale)) {
@@ -1088,7 +1133,7 @@ function updateForest(): void {
       treeTransform.position.y = tree.height + tree.scale * 19
       treeTransform.updateMatrix()
       forestCrowns.setMatrixAt(pineCount, treeTransform.matrix)
-      foliageColor.setHSL(0.27 + (tree.scale - 0.65) * 0.018, 0.31, 0.23 + (tree.scale - 0.65) * 0.05)
+      foliageColor.setHSL(0.27 - tree.autumn * 0.1 + (tree.scale - 0.65) * 0.018, 0.31 + tree.autumn * 0.2, 0.23 + (tree.scale - 0.65) * 0.05)
       forestCrowns.setColorAt(pineCount, foliageColor)
       registerTree(tree, index, pineCount, true)
       pineCount += 1
@@ -1097,7 +1142,7 @@ function updateForest(): void {
       treeTransform.scale.set(tree.scale * 1.5, tree.scale * 1.1, tree.scale * 1.35)
       treeTransform.updateMatrix()
       forestBroadleaf.setMatrixAt(broadleafCount, treeTransform.matrix)
-      foliageColor.setHSL(0.29 + (tree.scale - 0.65) * 0.018, 0.39, 0.27 + (tree.scale - 0.65) * 0.05)
+      foliageColor.setHSL(0.29 - tree.autumn * 0.23 + (tree.scale - 0.65) * 0.018, 0.39 + tree.autumn * 0.3, 0.27 + tree.autumn * 0.06 + (tree.scale - 0.65) * 0.05)
       forestBroadleaf.setColorAt(broadleafCount, foliageColor)
       registerTree(tree, index, broadleafCount, false)
       broadleafCount += 1
@@ -1629,7 +1674,7 @@ function updateTraffic(delta: number, now: number): void {
     for (const actor of trafficActors) scene.remove(actor.group)
     trafficRegionX = regionX
     trafficRegionZ = regionZ
-    trafficActors = generateFlyingThings(regionX * 6000, regionZ * 6000, 24).map((spawn) => {
+    trafficActors = generateFlyingThings(regionX * 6000, regionZ * 6000, 40).map((spawn) => {
       const model = createTrafficModel(spawn.kind)
       model.group.scale.setScalar(spawn.kind === 'birds' ? 1.6 : spawn.kind === 'airplane' ? 0.8 : spawn.kind === 'kite' ? 1.25 : 1)
       model.group.rotation.y = spawn.heading
@@ -1883,6 +1928,15 @@ function checkPlayerCollisions(now: number): void {
       return
     }
   }
+  for (const actor of enemyActors) {
+    if (!actor.alive) continue
+    const center = actor.group.position
+    if ((center.x - flight.x) ** 2 + (center.y - flight.y) ** 2 + (center.z - flight.z) ** 2 < (ENEMY_HIT_RADIUS + 18) ** 2) {
+      popEnemy(actor, now)
+      damagePlayer(now)
+      return
+    }
+  }
   if (!asteroidsActive) return
   for (const asteroid of asteroidStates) {
     if (asteroid.popped) continue
@@ -2041,6 +2095,7 @@ function updateProjectiles(now: number, delta: number): void {
         break
       }
     }
+    if (!hit) hit = hitEnemy(projectileStart, end, now)
     if (!hit && asteroidsActive) {
       for (const asteroid of asteroidStates) {
         if (asteroid.popped) continue
@@ -2066,6 +2121,144 @@ function updateProjectiles(now: number, delta: number): void {
     if (hit) {
       scene.remove(projectile.mesh)
       activeProjectiles.splice(index, 1)
+    }
+  }
+}
+
+const enemyBodyGeometry = new THREE.IcosahedronGeometry(1, 1)
+const enemyWingGeometry = new THREE.BoxGeometry(46, 0.9, 9)
+const enemyFinGeometry = new THREE.BoxGeometry(1, 9, 7)
+const enemyGlowGeometry = new THREE.SphereGeometry(3, 8, 6)
+const enemyBodyMaterial = new THREE.MeshStandardMaterial({ color: 0x4a2a2e, roughness: 0.5, metalness: 0.3, flatShading: true })
+const enemyWingMaterial = new THREE.MeshStandardMaterial({ color: 0x8f2f2b, roughness: 0.6, flatShading: true })
+const enemyGlowMaterial = new THREE.MeshBasicMaterial({ color: 0xff4a2a, toneMapped: false })
+const enemyBulletGeometry = new THREE.SphereGeometry(2.5, 8, 6)
+const enemyBulletMaterial = new THREE.MeshBasicMaterial({ color: 0xff5a3c, toneMapped: false })
+const ENEMY_BULLET_SPEED = 240
+const ENEMY_BULLET_LIFETIME = 3600
+const ENEMY_HIT_RADIUS = 36
+
+interface EnemyActor {
+  enemy: Enemy
+  group: THREE.Group
+  alive: boolean
+  respawnAt: number
+  previousHeading: number
+}
+
+interface EnemyBullet {
+  mesh: THREE.Mesh
+  velocity: THREE.Vector3
+  spawnedAt: number
+}
+
+const enemyActors: EnemyActor[] = []
+const enemyBullets: EnemyBullet[] = []
+const enemyAim = new THREE.Vector3()
+
+function createEnemyModel(): THREE.Group {
+  const group = new THREE.Group()
+  const body = new THREE.Mesh(enemyBodyGeometry, enemyBodyMaterial)
+  body.scale.set(5, 3.4, 16)
+  group.add(body)
+  group.add(new THREE.Mesh(enemyWingGeometry, enemyWingMaterial))
+  for (const side of [-22, 22]) {
+    const fin = new THREE.Mesh(enemyFinGeometry, enemyWingMaterial)
+    fin.position.set(side, 3, 1)
+    group.add(fin)
+  }
+  const eye = new THREE.Mesh(enemyGlowGeometry, enemyGlowMaterial)
+  eye.position.set(0, 1.5, -13)
+  group.add(eye)
+  const engine = new THREE.Mesh(enemyGlowGeometry, enemyGlowMaterial)
+  engine.position.set(0, 0, 16)
+  group.add(engine)
+  return group
+}
+
+function spawnEnemy(actor: EnemyActor): void {
+  const bearing = flight.heading + (random() - 0.5) * 0.9
+  const radius = 1500 + random() * 600
+  const x = flight.x - Math.sin(bearing) * radius
+  const z = flight.z - Math.cos(bearing) * radius
+  const y = Math.max(flight.y + (random() - 0.5) * 200, terrainHeight(x, z) + 200)
+  actor.enemy = createEnemy(x, y, z, random() * Math.PI * 2)
+  actor.enemy.heading = Math.atan2(flight.x - x, flight.z - z) + Math.PI
+  actor.previousHeading = actor.enemy.heading
+  actor.alive = true
+  actor.group.visible = true
+}
+
+function popEnemy(actor: EnemyActor, now: number): void {
+  actor.alive = false
+  actor.respawnAt = now + 6000
+  actor.group.visible = false
+  explode(actor.group.position, 50, fireDebris)
+  targetsPopped += 1
+  targetsPoppedReadout.textContent = String(targetsPopped)
+}
+
+function hitEnemy(start: THREE.Vector3, end: THREE.Vector3, now: number): boolean {
+  for (const actor of enemyActors) {
+    if (!actor.alive) continue
+    const center = actor.group.position
+    if (!segmentHitsSphere(start.x, start.y, start.z, end.x, end.y, end.z, center.x, center.y, center.z, ENEMY_HIT_RADIUS)) continue
+    actor.enemy.health -= 1
+    if (actor.enemy.health <= 0) popEnemy(actor, now)
+    else explode(center, 14, fireDebris)
+    return true
+  }
+  return false
+}
+
+function fireEnemyBullet(actor: EnemyActor, now: number): void {
+  const mesh = new THREE.Mesh(enemyBulletGeometry, enemyBulletMaterial)
+  enemyAim.set(flight.x - actor.enemy.x, flight.y - actor.enemy.y, flight.z - actor.enemy.z).normalize()
+  enemyAim.x += (Math.random() - 0.5) * 0.06
+  enemyAim.y += (Math.random() - 0.5) * 0.06
+  enemyAim.z += (Math.random() - 0.5) * 0.06
+  enemyAim.normalize()
+  mesh.position.set(actor.enemy.x, actor.enemy.y, actor.enemy.z).addScaledVector(enemyAim, 30)
+  scene.add(mesh)
+  enemyBullets.push({ mesh, velocity: enemyAim.clone().multiplyScalar(ENEMY_BULLET_SPEED), spawnedAt: now })
+}
+
+function updateEnemies(now: number, delta: number): void {
+  const wanted = Math.min(5, 2 + Math.floor(targetsPopped / 10))
+  while (enemyActors.length < wanted) {
+    const group = createEnemyModel()
+    group.visible = false
+    scene.add(group)
+    enemyActors.push({ enemy: createEnemy(0, 0, 0), group, alive: false, respawnAt: now + 3000, previousHeading: 0 })
+  }
+  for (const actor of enemyActors) {
+    if (!actor.alive) {
+      if (now >= actor.respawnAt) spawnEnemy(actor)
+      continue
+    }
+    if (Math.hypot(actor.enemy.x - flight.x, actor.enemy.z - flight.z) > 6500) {
+      spawnEnemy(actor)
+      continue
+    }
+    if (stepEnemy(actor.enemy, flight, delta)) fireEnemyBullet(actor, now)
+    const turn = delta > 0 ? (actor.enemy.heading - actor.previousHeading) / delta : 0
+    actor.previousHeading = actor.enemy.heading
+    actor.group.position.set(actor.enemy.x, actor.enemy.y, actor.enemy.z)
+    actor.group.rotation.set(0, actor.enemy.heading, THREE.MathUtils.clamp(turn * 0.6, -0.6, 0.6))
+  }
+}
+
+function updateEnemyBullets(now: number, delta: number): void {
+  for (let index = enemyBullets.length - 1; index >= 0; index -= 1) {
+    const bullet = enemyBullets[index]
+    projectileStart.copy(bullet.mesh.position)
+    bullet.mesh.position.addScaledVector(bullet.velocity, delta)
+    const end = bullet.mesh.position
+    const struck = segmentHitsSphere(projectileStart.x, projectileStart.y, projectileStart.z, end.x, end.y, end.z, flight.x, flight.y, flight.z, 16)
+    if (struck) damagePlayer(now)
+    if (struck || now - bullet.spawnedAt > ENEMY_BULLET_LIFETIME) {
+      scene.remove(bullet.mesh)
+      enemyBullets.splice(index, 1)
     }
   }
 }
@@ -2099,6 +2292,12 @@ function resetFlight(): void {
   damageUntil = 0
   damageCooldownUntil = 0
   for (const projectile of activeProjectiles.splice(0)) scene.remove(projectile.mesh)
+  for (const bullet of enemyBullets.splice(0)) scene.remove(bullet.mesh)
+  for (const actor of enemyActors) {
+    actor.alive = false
+    actor.group.visible = false
+    actor.respawnAt = performance.now() + 2500
+  }
   setPaused(false)
 }
 
@@ -2213,6 +2412,8 @@ function render(now: number): void {
     if (touchFire || pressedKeys.has('KeyF')) fireProjectile(now)
     updateProjectiles(now, delta)
     updateAsteroids(now, delta)
+    updateEnemies(now, delta)
+    updateEnemyBullets(now, delta)
   }
   updatePopFlashes(now)
   updateDebris(delta)
