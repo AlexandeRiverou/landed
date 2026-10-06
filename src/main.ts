@@ -5,12 +5,15 @@ import { createFieldNote, fieldNoteBearing, fieldNoteDistance, fieldNoteProgress
 import { createPersuasion, persuasionLook, resetPersuasionDistance, stepPersuasion, type PersuasionEvent } from './persuasion'
 import { segmentHitsSphere } from './collision'
 import { resolveTowerCollision } from './obstacles'
-import { createEnemy, stepEnemy, type Enemy } from './enemies'
+import { createEnemy, ENEMY_STATS, stepEnemy, type Enemy, type EnemyKind } from './enemies'
+import { createAudio } from './audio'
+import { applyScore, createScore, ringBonus, type ScoreKey } from './score'
 import { worldEventForObjective, type WorldEvent } from './world-events'
 import { createWorldSeed, generateCannons, generateFlyingThings, generateForest, generateRockField, generateSettlement, generateTowers, generateWaterfalls, setWorldSeed, type TowerSite, type WaterfallSite, terrainGridOrigin, terrainHeight, terrainNormalAt, waterCoverage, worldSeedOffset } from './world'
 
 const worldSeed = createWorldSeed()
 setWorldSeed(worldSeed)
+const audio = createAudio(worldSeed)
 
 const app = document.querySelector<HTMLDivElement>('#app')!
 
@@ -26,6 +29,7 @@ app.innerHTML = `
       <div class="flight-status"><span class="status-light"></span><span>IN THE AIR</span></div>
       <div class="flight-actions">
         <button class="fire-button" id="fire-button" type="button" aria-label="Hold to fire" aria-pressed="false">FIRE</button>
+        <button class="reset-button" id="mute-button" type="button" aria-label="Toggle sound" aria-pressed="false">SOUND</button>
         <button class="boost-button" id="boost-button" type="button" aria-label="Hold to boost" aria-pressed="false">BOOST</button>
         <button class="reset-button" id="reset-flight" type="button">RESET</button>
         <button class="pause-button" id="pause-button" type="button" aria-label="Pause flight">
@@ -35,13 +39,10 @@ app.innerHTML = `
       </div>
     </header>
 
-    <section class="view-title" aria-label="Current flight">
-      <p class="location-line"><span class="location-dot"></span> OPEN COUNTRY <span class="location-divider">/</span> NO. 01</p>
-      <h1>Quiet<br>air.</h1>
-    </section>
-
     <section class="flight-data" aria-label="Flight instruments">
       <div class="data-heading"><span>FLIGHT DATA</span><span class="data-live">LIVE</span></div>
+      <div class="data-row score-row"><span>SCORE</span><strong><span id="score">0</span><small> PTS</small></strong></div>
+      <div class="score-pop" id="score-pop" aria-live="polite"></div>
       <div class="data-row"><span>ALTITUDE</span><strong><span id="altitude">1,320</span><small> M</small></strong></div>
       <div class="data-row"><span>GROUND SPEED</span><strong><span id="speed">187</span><small> KM/H</small></strong></div>
       <div class="data-row"><span>HEADING</span><strong><span id="heading">000</span><small> DEG</small></strong></div>
@@ -94,6 +95,21 @@ const headingReadout = document.querySelector<HTMLSpanElement>('#heading')!
 const terrainReadout = document.querySelector<HTMLSpanElement>('#terrain-label')!
 const coordinatesReadout = document.querySelector<HTMLSpanElement>('#coordinates')!
 const targetsPoppedReadout = document.querySelector<HTMLSpanElement>('#targets-popped')!
+const scoreReadout = document.querySelector<HTMLSpanElement>('#score')!
+const scorePop = document.querySelector<HTMLDivElement>('#score-pop')!
+const scoreState = createScore()
+
+function awardScore(key: ScoreKey, now: number, bonus = 0): void {
+  const result = applyScore(scoreState, key, now, bonus)
+  scoreReadout.textContent = scoreState.score.toLocaleString('en-US')
+  const sign = result.delta >= 0 ? '+' : '\u2212'
+  const combo = result.multiplier > 1 ? ` x${result.multiplier.toFixed(2)}` : ''
+  scorePop.textContent = `${sign}${Math.abs(result.delta)} ${result.label}${combo}`
+  scorePop.classList.toggle('is-loss', result.delta < 0)
+  scorePop.classList.remove('is-visible')
+  void scorePop.offsetWidth
+  scorePop.classList.add('is-visible')
+}
 const noteCountReadout = document.querySelector<HTMLSpanElement>('#note-count')!
 const noteTitleReadout = document.querySelector<HTMLElement>('#note-title')!
 const notePromptReadout = document.querySelector<HTMLParagraphElement>('#note-prompt')!
@@ -909,6 +925,8 @@ function updateFieldNote(now: number): void {
 
   if (!paused && reachedFieldNote(activeFieldNote, flight.x, flight.y, flight.z, 125 * look.scale)) {
     fieldNotesKept += 1
+    awardScore('ring', now, ringBonus(persuasion.stage, flight.boost > 0.5))
+    audio.chime()
     const worldEvent = worldEventForObjective(fieldNotesKept - 1, worldSeed)
     noteCountReadout.textContent = `${String(fieldNotesKept).padStart(2, '0')} KEPT`
     noteTitleReadout.textContent = worldEvent.title
@@ -1864,6 +1882,7 @@ function updateDebris(delta: number): void {
 }
 
 function explode(position: THREE.Vector3, size: number, palette: readonly number[] = fireDebris): void {
+  audio.explosion(size)
   spawnPopFlash(position, size * 3.4, 0xffd27a)
   spawnPopFlash(position, size * 2.2, 0xff6a2a)
   const chunks = Math.min(36, Math.round(14 + size * 0.5))
@@ -1896,10 +1915,12 @@ let damageCooldownUntil = 0
 const projectileStart = new THREE.Vector3()
 const hitCenter = new THREE.Vector3()
 
-function damagePlayer(now: number): void {
+function damagePlayer(now: number, penalty: ScoreKey): void {
   if (now < damageCooldownUntil) return
+  awardScore(penalty, now)
   damageUntil = now + DAMAGE_DURATION
   damageCooldownUntil = now + 1200
+  audio.hit()
   damageSmokePosition.set(flight.x, flight.y, flight.z)
   for (let spark = 0; spark < 8; spark += 1) {
     damageSmokeVelocity.set((Math.random() - 0.5) * 70, (Math.random() - 0.2) * 50, (Math.random() - 0.5) * 70)
@@ -1924,16 +1945,16 @@ function checkPlayerCollisions(now: number): void {
     const center = actor.group.position
     if ((center.x - flight.x) ** 2 + (center.y - flight.y) ** 2 + (center.z - flight.z) ** 2 < radius * radius) {
       popTrafficActor(actor, now)
-      damagePlayer(now)
+      damagePlayer(now, 'crash-traffic')
       return
     }
   }
   for (const actor of enemyActors) {
     if (!actor.alive) continue
     const center = actor.group.position
-    if ((center.x - flight.x) ** 2 + (center.y - flight.y) ** 2 + (center.z - flight.z) ** 2 < (ENEMY_HIT_RADIUS + 18) ** 2) {
+    if ((center.x - flight.x) ** 2 + (center.y - flight.y) ** 2 + (center.z - flight.z) ** 2 < (ENEMY_STATS[actor.enemy.kind].hitRadius + 18) ** 2) {
       popEnemy(actor, now)
-      damagePlayer(now)
+      damagePlayer(now, 'ram-enemy')
       return
     }
   }
@@ -1944,7 +1965,7 @@ function checkPlayerCollisions(now: number): void {
     const center = asteroid.position
     if ((center.x - flight.x) ** 2 + (center.y - flight.y) ** 2 + (center.z - flight.z) ** 2 < radius * radius) {
       popAsteroid(asteroid, now)
-      damagePlayer(now)
+      damagePlayer(now, 'crash-asteroid')
       return
     }
   }
@@ -2037,6 +2058,7 @@ function updateAsteroids(now: number, delta: number): void {
 function fireProjectile(now: number): void {
   if (now - lastShotAt < SHOT_COOLDOWN) return
   lastShotAt = now
+  audio.shot()
   const mesh = new THREE.Mesh(projectileGeometry, projectileMaterial)
   const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(glider.quaternion)
   mesh.position.set(flight.x, flight.y, flight.z).addScaledVector(forward, 16)
@@ -2069,6 +2091,7 @@ function destroyDestructible(target: Destructible): void {
   target.destroyed = true
   explode(destructibleCenter(target), target.size, target.palette)
   target.destroy()
+  awardScore(target.palette === leafDebris ? 'tree' : target.palette === rockDebris ? 'rock' : target.palette === woodDebris ? 'house' : target.object ? 'car' : 'cannon', performance.now())
   targetsPopped += 1
   targetsPoppedReadout.textContent = String(targetsPopped)
 }
@@ -2091,6 +2114,7 @@ function updateProjectiles(now: number, delta: number): void {
       const center = actor.group.position
       if (segmentHitsSphere(projectileStart.x, projectileStart.y, projectileStart.z, end.x, end.y, end.z, center.x, center.y, center.z, trafficHitRadius[actor.spawn.kind])) {
         popTrafficActor(actor, now)
+        awardScore(actor.spawn.kind === 'birds' ? 'bird' : actor.spawn.kind, now)
         hit = true
         break
       }
@@ -2102,6 +2126,7 @@ function updateProjectiles(now: number, delta: number): void {
         const center = asteroid.position
         if (segmentHitsSphere(projectileStart.x, projectileStart.y, projectileStart.z, end.x, end.y, end.z, center.x, center.y, center.z, asteroid.scale * 1.3)) {
           popAsteroid(asteroid, now)
+          awardScore('asteroid', now)
           hit = true
           break
         }
@@ -2136,7 +2161,6 @@ const enemyBulletGeometry = new THREE.SphereGeometry(2.5, 8, 6)
 const enemyBulletMaterial = new THREE.MeshBasicMaterial({ color: 0xff5a3c, toneMapped: false })
 const ENEMY_BULLET_SPEED = 240
 const ENEMY_BULLET_LIFETIME = 3600
-const ENEMY_HIT_RADIUS = 36
 
 interface EnemyActor {
   enemy: Enemy
@@ -2156,24 +2180,60 @@ const enemyActors: EnemyActor[] = []
 const enemyBullets: EnemyBullet[] = []
 const enemyAim = new THREE.Vector3()
 
-function createEnemyModel(): THREE.Group {
+const enemyPalettes: Record<EnemyKind, { body: THREE.MeshStandardMaterial; wing: THREE.MeshStandardMaterial; glow: THREE.MeshBasicMaterial }> = {
+  drone: { body: enemyBodyMaterial, wing: enemyWingMaterial, glow: enemyGlowMaterial },
+  interceptor: {
+    body: new THREE.MeshStandardMaterial({ color: 0x25384f, roughness: 0.4, metalness: 0.4, flatShading: true }),
+    wing: new THREE.MeshStandardMaterial({ color: 0x4f86a8, roughness: 0.5, flatShading: true }),
+    glow: new THREE.MeshBasicMaterial({ color: 0x66e6ff, toneMapped: false }),
+  },
+  gunship: {
+    body: new THREE.MeshStandardMaterial({ color: 0x3a4636, roughness: 0.6, metalness: 0.25, flatShading: true }),
+    wing: new THREE.MeshStandardMaterial({ color: 0x7a6a38, roughness: 0.7, flatShading: true }),
+    glow: new THREE.MeshBasicMaterial({ color: 0xffb13a, toneMapped: false }),
+  },
+}
+const enemyShapes: Record<EnemyKind, { body: [number, number, number]; wing: [number, number, number]; fins: number; glows: number[]; glowSize: number }> = {
+  drone: { body: [5, 3.4, 16], wing: [1, 1, 1], fins: 22, glows: [0], glowSize: 1 },
+  interceptor: { body: [2.6, 2, 18], wing: [0.5, 1, 0.8], fins: 11, glows: [0], glowSize: 0.8 },
+  gunship: { body: [9, 6, 24], wing: [1.5, 1.4, 1.6], fins: 33, glows: [-14, 14], glowSize: 1.8 },
+}
+const enemyExplosionSize: Record<EnemyKind, number> = { drone: 50, interceptor: 34, gunship: 95 }
+
+function createEnemyModel(kind: EnemyKind): THREE.Group {
+  const palette = enemyPalettes[kind]
+  const shape = enemyShapes[kind]
   const group = new THREE.Group()
-  const body = new THREE.Mesh(enemyBodyGeometry, enemyBodyMaterial)
-  body.scale.set(5, 3.4, 16)
+  const body = new THREE.Mesh(enemyBodyGeometry, palette.body)
+  body.scale.set(...shape.body)
   group.add(body)
-  group.add(new THREE.Mesh(enemyWingGeometry, enemyWingMaterial))
-  for (const side of [-22, 22]) {
-    const fin = new THREE.Mesh(enemyFinGeometry, enemyWingMaterial)
+  const wings = new THREE.Mesh(enemyWingGeometry, palette.wing)
+  wings.scale.set(...shape.wing)
+  group.add(wings)
+  for (const side of [-shape.fins, shape.fins]) {
+    const fin = new THREE.Mesh(enemyFinGeometry, palette.wing)
     fin.position.set(side, 3, 1)
+    fin.scale.setScalar(shape.glowSize)
     group.add(fin)
   }
-  const eye = new THREE.Mesh(enemyGlowGeometry, enemyGlowMaterial)
-  eye.position.set(0, 1.5, -13)
+  const eye = new THREE.Mesh(enemyGlowGeometry, palette.glow)
+  eye.position.set(0, 1.5, -shape.body[2] * 0.8)
+  eye.scale.setScalar(shape.glowSize)
   group.add(eye)
-  const engine = new THREE.Mesh(enemyGlowGeometry, enemyGlowMaterial)
-  engine.position.set(0, 0, 16)
-  group.add(engine)
+  for (const offset of shape.glows) {
+    const engine = new THREE.Mesh(enemyGlowGeometry, palette.glow)
+    engine.position.set(offset, 0, shape.body[2])
+    engine.scale.setScalar(shape.glowSize)
+    group.add(engine)
+  }
   return group
+}
+
+function pickEnemyKind(): EnemyKind {
+  const roll = random()
+  if (targetsPopped >= 12 && roll < 0.25) return 'gunship'
+  if (targetsPopped >= 4 && roll < 0.55) return 'interceptor'
+  return 'drone'
 }
 
 function spawnEnemy(actor: EnemyActor): void {
@@ -2182,7 +2242,11 @@ function spawnEnemy(actor: EnemyActor): void {
   const x = flight.x - Math.sin(bearing) * radius
   const z = flight.z - Math.cos(bearing) * radius
   const y = Math.max(flight.y + (random() - 0.5) * 200, terrainHeight(x, z) + 200)
-  actor.enemy = createEnemy(x, y, z, random() * Math.PI * 2)
+  const kind = pickEnemyKind()
+  scene.remove(actor.group)
+  actor.group = createEnemyModel(kind)
+  scene.add(actor.group)
+  actor.enemy = createEnemy(x, y, z, random() * Math.PI * 2, kind)
   actor.enemy.heading = Math.atan2(flight.x - x, flight.z - z) + Math.PI
   actor.previousHeading = actor.enemy.heading
   actor.alive = true
@@ -2193,7 +2257,7 @@ function popEnemy(actor: EnemyActor, now: number): void {
   actor.alive = false
   actor.respawnAt = now + 6000
   actor.group.visible = false
-  explode(actor.group.position, 50, fireDebris)
+  explode(actor.group.position, enemyExplosionSize[actor.enemy.kind], fireDebris)
   targetsPopped += 1
   targetsPoppedReadout.textContent = String(targetsPopped)
 }
@@ -2202,21 +2266,27 @@ function hitEnemy(start: THREE.Vector3, end: THREE.Vector3, now: number): boolea
   for (const actor of enemyActors) {
     if (!actor.alive) continue
     const center = actor.group.position
-    if (!segmentHitsSphere(start.x, start.y, start.z, end.x, end.y, end.z, center.x, center.y, center.z, ENEMY_HIT_RADIUS)) continue
+    if (!segmentHitsSphere(start.x, start.y, start.z, end.x, end.y, end.z, center.x, center.y, center.z, ENEMY_STATS[actor.enemy.kind].hitRadius)) continue
     actor.enemy.health -= 1
-    if (actor.enemy.health <= 0) popEnemy(actor, now)
+    if (actor.enemy.health <= 0) {
+      popEnemy(actor, now)
+      awardScore(actor.enemy.kind, now)
+    }
     else explode(center, 14, fireDebris)
     return true
   }
   return false
 }
 
-function fireEnemyBullet(actor: EnemyActor, now: number): void {
+function fireEnemyBullet(actor: EnemyActor, now: number, spread = 0): void {
   const mesh = new THREE.Mesh(enemyBulletGeometry, enemyBulletMaterial)
+  audio.enemyShot()
   enemyAim.set(flight.x - actor.enemy.x, flight.y - actor.enemy.y, flight.z - actor.enemy.z).normalize()
   enemyAim.x += (Math.random() - 0.5) * 0.06
   enemyAim.y += (Math.random() - 0.5) * 0.06
   enemyAim.z += (Math.random() - 0.5) * 0.06
+  enemyAim.x -= enemyAim.z * spread
+  enemyAim.z += enemyAim.x * spread
   enemyAim.normalize()
   mesh.position.set(actor.enemy.x, actor.enemy.y, actor.enemy.z).addScaledVector(enemyAim, 30)
   scene.add(mesh)
@@ -2226,7 +2296,7 @@ function fireEnemyBullet(actor: EnemyActor, now: number): void {
 function updateEnemies(now: number, delta: number): void {
   const wanted = Math.min(5, 2 + Math.floor(targetsPopped / 10))
   while (enemyActors.length < wanted) {
-    const group = createEnemyModel()
+    const group = createEnemyModel('drone')
     group.visible = false
     scene.add(group)
     enemyActors.push({ enemy: createEnemy(0, 0, 0), group, alive: false, respawnAt: now + 3000, previousHeading: 0 })
@@ -2240,7 +2310,10 @@ function updateEnemies(now: number, delta: number): void {
       spawnEnemy(actor)
       continue
     }
-    if (stepEnemy(actor.enemy, flight, delta)) fireEnemyBullet(actor, now)
+    if (stepEnemy(actor.enemy, flight, delta)) {
+      const burst = ENEMY_STATS[actor.enemy.kind].burst
+      for (let shot = 0; shot < burst; shot += 1) fireEnemyBullet(actor, now, (shot - (burst - 1) / 2) * 0.1)
+    }
     const turn = delta > 0 ? (actor.enemy.heading - actor.previousHeading) / delta : 0
     actor.previousHeading = actor.enemy.heading
     actor.group.position.set(actor.enemy.x, actor.enemy.y, actor.enemy.z)
@@ -2255,7 +2328,7 @@ function updateEnemyBullets(now: number, delta: number): void {
     bullet.mesh.position.addScaledVector(bullet.velocity, delta)
     const end = bullet.mesh.position
     const struck = segmentHitsSphere(projectileStart.x, projectileStart.y, projectileStart.z, end.x, end.y, end.z, flight.x, flight.y, flight.z, 16)
-    if (struck) damagePlayer(now)
+    if (struck) damagePlayer(now, 'hit-by-shot')
     if (struck || now - bullet.spawnedAt > ENEMY_BULLET_LIFETIME) {
       scene.remove(bullet.mesh)
       enemyBullets.splice(index, 1)
@@ -2289,6 +2362,9 @@ function resetFlight(): void {
   resetFieldNotes()
   targetsPopped = 0
   targetsPoppedReadout.textContent = '0'
+  Object.assign(scoreState, createScore())
+  scoreReadout.textContent = '0'
+  scorePop.classList.remove('is-visible')
   damageUntil = 0
   damageCooldownUntil = 0
   for (const projectile of activeProjectiles.splice(0)) scene.remove(projectile.mesh)
@@ -2300,6 +2376,15 @@ function resetFlight(): void {
   }
   setPaused(false)
 }
+
+const muteButton = document.querySelector<HTMLButtonElement>('#mute-button')!
+function toggleSound(): void {
+  const muted = audio.toggleMute()
+  muteButton.setAttribute('aria-pressed', String(muted))
+  muteButton.textContent = muted ? 'MUTED' : 'SOUND'
+}
+muteButton.addEventListener('click', toggleSound)
+window.addEventListener('pointerdown', () => audio.start())
 
 pauseButton.addEventListener('click', () => setPaused(!paused))
 document.querySelector<HTMLButtonElement>('#reset-flight')!.addEventListener('click', resetFlight)
@@ -2347,6 +2432,8 @@ for (const [id, roll, pitch] of touchButtons) {
 }
 
 window.addEventListener('keydown', (event) => {
+  audio.start()
+  if (event.code === 'KeyM' && !event.repeat) toggleSound()
   const controls = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'KeyA', 'KeyD', 'KeyW', 'KeyS']
   const boostControls = ['Space', 'ShiftLeft', 'ShiftRight']
   const fireControls = ['KeyF']
@@ -2396,7 +2483,9 @@ function render(now: number): void {
       pitch: controlValue(['ArrowDown', 'KeyS'], ['ArrowUp', 'KeyW'], touchPitch),
       boost: touchBoost || pressedKeys.has('Space') || pressedKeys.has('ShiftLeft') || pressedKeys.has('ShiftRight'),
     }, delta)
-    if (scraped || resolveTowerCollision(flight, activeTowers)) damagePlayer(now)
+    const tower = resolveTowerCollision(flight, activeTowers)
+    if (tower) damagePlayer(now, 'tower')
+    else if (scraped) damagePlayer(now, 'cliff')
   }
 
   glider.position.set(flight.x, flight.y, flight.z)

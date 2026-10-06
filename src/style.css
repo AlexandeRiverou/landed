@@ -92,13 +92,17 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .pause-icon { display: flex; gap: 3px; height: 11px; }
 .pause-icon i { display: block; width: 2px; height: 11px; background: currentColor; }
 
-.view-title { top: 20%; left: 8.2%; animation: settle-in 850ms 130ms both; }
-.location-line { display: flex; align-items: center; gap: 9px; margin: 0 0 18px; color: #465c54; font-size: 9px; }
-.location-dot { width: 5px; height: 5px; background: var(--accent); box-shadow: none; }
-.location-divider { margin: 0 1px; opacity: .55; }
-.view-title h1 { margin: 0; color: #f4f0df; font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif; font-size: 88px; font-weight: 400; line-height: .86; letter-spacing: 0; text-shadow: 0 2px 24px rgb(35 55 51 / 13%); }
-
 .flight-data { top: 17%; right: 6.2%; width: 202px; color: var(--ink); animation: settle-in 850ms 230ms both; }
+.score-row strong { color: #fff3d6; text-shadow: 0 1px 8px rgb(35 55 51 / 35%); }
+.score-pop { position: absolute; right: 0; top: -30px; opacity: 0; pointer-events: none; color: #1f6b3a; font: 700 11px/1 "SFMono-Regular", Consolas, monospace; letter-spacing: .08em; text-shadow: 0 1px 6px rgb(255 255 255 / 55%); white-space: nowrap; }
+.score-pop.is-loss { color: #a8322a; }
+.score-pop.is-visible { animation: score-pop 1900ms ease-out; }
+@keyframes score-pop {
+  0% { opacity: 0; transform: translateY(8px); }
+  12% { opacity: 1; transform: translateY(0); }
+  75% { opacity: 1; }
+  100% { opacity: 0; transform: translateY(-6px); }
+}
 .data-heading { display: flex; justify-content: space-between; padding-bottom: 12px; border-bottom: 1px solid rgb(38 55 50 / 34%); font-size: 8px; }
 .data-live { color: #60766c; }
 .data-row { display: flex; align-items: baseline; justify-content: space-between; padding: 11px 0 10px; border-bottom: 1px solid rgb(38 55 50 / 17%); }
@@ -199,9 +203,6 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
   .flight-status { margin-right: 12px; font-size: 8px; }
   .flight-actions { gap: 6px; }
   .fire-button, .boost-button, .pause-button, .reset-button { height: 33px; padding: 0 9px; font-size: 8px; }
-  .view-title { top: 22%; left: 25px; }
-  .view-title h1 { font-size: 61px; }
-  .location-line { gap: 7px; margin-bottom: 13px; font-size: 8px; }
   .flight-data { top: 103px; right: 22px; width: 154px; }
   .data-heading { padding-bottom: 8px; }
   .data-row { padding: 8px 0 7px; }
@@ -220,8 +221,6 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
   .wordmark-copy small, .reset-button { display: none; }
   .wordmark-copy small { font-size: 7px; }
   .flight-status { display: none; }
-  .view-title { top: 25%; }
-  .view-title h1 { font-size: 54px; }
   .flight-data { width: 138px; }
   .data-row > span { font-size: 7px; }
   .footer-coordinates { display: none; }
@@ -231,8 +230,6 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 
 @media (max-height: 560px) and (orientation: landscape) {
   .masthead { height: 62px; }
-  .view-title { top: 23%; }
-  .view-title h1 { font-size: 54px; }
   .flight-data { top: 95px; }
   .flight-footer { bottom: 14px; }
 }
