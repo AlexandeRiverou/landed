@@ -1,7 +1,7 @@
 import { highestTerrainAlongPath } from './world'
 
 const CRUISE_SPEED = 64
-const BOOST_SPEED = 128
+const BOOST_SPEED = 256
 const BOOST_CHARGE_RATE = 0.3
 const BOOST_DECAY_RATE = 0.4
 const MAX_BANK = 0.78
