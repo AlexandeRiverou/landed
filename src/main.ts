@@ -7,6 +7,10 @@ import { segmentHitsSphere } from './collision'
 import { resolveTowerCollision } from './obstacles'
 import { createEnemy, ENEMY_STATS, stepEnemy, type Enemy, type EnemyKind } from './enemies'
 import { createAudio } from './audio'
+import {
+  activatePowerUp, createEffects, drainPowerUps, enemyTimeScale, fireCooldownScale, inPickupRange, isPowerUpActive, nextSpawnDelayMs, pickPowerUpKind, pickupExpired, pickupFading,
+  POWERUP_KINDS, POWERUP_HIT_PENALTY_MS, POWERUP_MAX_PICKUPS, powerUpRemaining, powerUpSpawnPoint, POWERUPS, scoreBoost, shiftPowerUpTimers, shotFan, type PowerUpKind, type PowerUpPickup,
+} from './powerups'
 import { BOSS_STATS, bossDue, bossEnraged, createBoss, damageBoss, stepBoss, type Boss, type BossKind } from './bosses'
 import { applyScore, createScore, ringBonus, SCORE_RULES, type ScoreKey } from './score'
 import { worldEventForObjective, type ParticleKind, type WorldEvent } from './world-events'
@@ -62,6 +66,8 @@ app.innerHTML = `
     <div class="sightline" aria-hidden="true"><span></span><i></i><span></span></div>
     <div class="far-arrow" id="far-arrow" aria-hidden="true"><i id="far-arrow-head"></i><span id="far-arrow-range"></span></div>
     <div class="boss-bar" id="boss-bar" aria-live="polite"><span id="boss-name"></span><div class="boss-track"><i id="boss-fill"></i></div></div>
+    <div class="powerup-list" id="powerup-list" aria-label="Active power-ups"></div>
+    <div class="powerup-note" id="powerup-note" aria-live="polite"></div>
     <div class="moment-toast" id="moment-toast" aria-live="polite" aria-hidden="true">
       <span id="moment-label">FIELD NOTE SAVED</span>
       <strong id="moment-title">THE SKY IS SMILING</strong>
@@ -102,7 +108,7 @@ const scorePop = document.querySelector<HTMLDivElement>('#score-pop')!
 const scoreState = createScore()
 
 function awardScore(key: ScoreKey, now: number, bonus = 0): void {
-  const result = applyScore(scoreState, key, now, bonus, activeWorldEvent?.scoreMultiplier ?? 1)
+  const result = applyScore(scoreState, key, now, bonus, (activeWorldEvent?.scoreMultiplier ?? 1) * scoreBoost(powerEffects, now))
   scoreReadout.textContent = scoreState.score.toLocaleString('en-US')
   const gain = SCORE_RULES[key].points > 0
   const sign = gain ? '+' : '\u2212'
@@ -2018,6 +2024,18 @@ const hitCenter = new THREE.Vector3()
 
 function damagePlayer(now: number, penalty: ScoreKey): void {
   if (now < damageCooldownUntil) return
+  if (penalty !== 'hit-by-shot' && isPowerUpActive(powerEffects, 'ghost', now)) return
+  if (isPowerUpActive(powerEffects, 'shield', now)) {
+    powerEffects.shield = 0
+    damageCooldownUntil = now + 900
+    spawnPopFlash(damageSmokePosition.set(flight.x, flight.y, flight.z), 120, POWERUPS.shield.color)
+    audio.pickup()
+    showPowerUpNote('SHIELD POPPED', 'It did its job and left a tip.', POWERUPS.shield.color, now)
+    return
+  }
+  if ((penalty === 'hit-by-shot' || penalty === 'ram-enemy') && drainPowerUps(powerEffects, now, POWERUP_HIT_PENALTY_MS)) {
+    showPowerUpNote('POWER DRAIN', `Enemy hit: every power-up loses ${POWERUP_HIT_PENALTY_MS / 1000}s.`, 0xff6a5a, now)
+  }
   awardScore(penalty, now)
   damageUntil = now + DAMAGE_DURATION
   damageCooldownUntil = now + 1200
@@ -2157,14 +2175,17 @@ function updateAsteroids(now: number, delta: number): void {
 }
 
 function fireProjectile(now: number): void {
-  if (now - lastShotAt < SHOT_COOLDOWN) return
+  if (now - lastShotAt < SHOT_COOLDOWN * fireCooldownScale(powerEffects, now)) return
   lastShotAt = now
   audio.shot()
-  const mesh = new THREE.Mesh(projectileGeometry, projectileMaterial)
-  const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(glider.quaternion)
-  mesh.position.set(flight.x, flight.y, flight.z).addScaledVector(forward, 16)
-  scene.add(mesh)
-  activeProjectiles.push({ mesh, velocity: forward.clone().multiplyScalar(PROJECTILE_SPEED + flight.speed), spawnedAt: now })
+  for (const yaw of shotFan(powerEffects, now)) {
+    const mesh = new THREE.Mesh(projectileGeometry, projectileMaterial)
+    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(glider.quaternion)
+    if (yaw !== 0) forward.applyAxisAngle(new THREE.Vector3(0, 1, 0), yaw)
+    mesh.position.set(flight.x, flight.y, flight.z).addScaledVector(forward, 16)
+    scene.add(mesh)
+    activeProjectiles.push({ mesh, velocity: forward.clone().multiplyScalar(PROJECTILE_SPEED + flight.speed), spawnedAt: now })
+  }
 }
 
 function popTrafficActor(actor: TrafficActor, now: number): void {
@@ -2702,6 +2723,202 @@ function checkBossCollision(now: number): void {
   if ((boss.x - flight.x) ** 2 + (boss.y - flight.y) ** 2 + (boss.z - flight.z) ** 2 < reach * reach) damagePlayer(now, 'ram-enemy')
 }
 
+const powerEffects = createEffects()
+const powerPickups: Array<PowerUpPickup & { group: THREE.Group }> = []
+let nextPowerUpAt = performance.now() + 8000 + random() * 6000
+let powerNoteUntil = 0
+let lastPowerListKey = ''
+const powerList = document.querySelector<HTMLDivElement>('#powerup-list')!
+const powerNote = document.querySelector<HTMLDivElement>('#powerup-note')!
+const powerShellGeometry = new THREE.SphereGeometry(9, 20, 14)
+const powerRingGeometry = new THREE.TorusGeometry(12.5, 0.32, 6, 40)
+const powerSparkGeometry = new THREE.SphereGeometry(0.95, 8, 6)
+const powerBeamGeometry = new THREE.CylinderGeometry(0.45, 0.45, 220, 6, 1, true)
+const powerIconGeometries = {
+  icosa: new THREE.IcosahedronGeometry(4.6, 0),
+  octa: new THREE.OctahedronGeometry(3.6),
+  cone: new THREE.ConeGeometry(2.4, 7, 3),
+  dodeca: new THREE.DodecahedronGeometry(4.4),
+  torus: new THREE.TorusGeometry(3.6, 1.3, 8, 18),
+  arrow: new THREE.ConeGeometry(3, 9, 5),
+  ghost: new THREE.SphereGeometry(4.1, 14, 10),
+  eye: new THREE.SphereGeometry(0.7, 6, 4),
+}
+const powerAuraMaterial = new THREE.MeshBasicMaterial({ color: 0x66e6ff, transparent: true, opacity: 0.7, depthWrite: false, toneMapped: false })
+const powerAura = new THREE.Group()
+for (const [x, y] of [[0, 0], [Math.PI / 2, 0], [0, Math.PI / 2]]) {
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(10, 0.16, 6, 36), powerAuraMaterial)
+  ring.rotation.set(x, y, 0)
+  powerAura.add(ring)
+}
+powerAura.visible = false
+glider.add(powerAura)
+
+function createPowerUpIcon(kind: PowerUpKind, material: THREE.MeshBasicMaterial): THREE.Group {
+  const icon = new THREE.Group()
+  const add = (geometry: THREE.BufferGeometry, setup?: (mesh: THREE.Mesh) => void): void => {
+    const mesh = new THREE.Mesh(geometry, material)
+    setup?.(mesh)
+    icon.add(mesh)
+  }
+  if (kind === 'shield') add(powerIconGeometries.icosa)
+  else if (kind === 'rapid') add(powerIconGeometries.octa, (mesh) => mesh.scale.set(0.8, 1.8, 0.8))
+  else if (kind === 'spread') {
+    for (const angle of [-0.5, 0, 0.5]) add(powerIconGeometries.cone, (mesh) => { mesh.rotation.z = angle; mesh.position.x = angle * 5 })
+  } else if (kind === 'goose') add(powerIconGeometries.dodeca)
+  else if (kind === 'slowmo') add(powerIconGeometries.torus)
+  else if (kind === 'turbo') add(powerIconGeometries.arrow)
+  else if (kind === 'nova') {
+    add(powerIconGeometries.octa, (mesh) => mesh.scale.setScalar(1.4))
+    add(powerIconGeometries.octa, (mesh) => { mesh.scale.setScalar(1.4); mesh.rotation.set(Math.PI / 4, Math.PI / 4, 0) })
+  } else {
+    add(powerIconGeometries.ghost)
+    for (const side of [-1.4, 1.4]) add(powerIconGeometries.eye, (mesh) => mesh.position.set(side, 0.9, 3.7))
+  }
+  return icon
+}
+
+function createPowerUpModel(kind: PowerUpKind): THREE.Group {
+  const color = POWERUPS[kind].color
+  const group = new THREE.Group()
+  const light = new THREE.Color(color).lerp(new THREE.Color(0xffffff), 0.45)
+  const glow = (opacity: number, additive = true) => new THREE.MeshBasicMaterial({ color, transparent: true, opacity, depthWrite: false, toneMapped: false, blending: additive ? THREE.AdditiveBlending : THREE.NormalBlending })
+  group.add(new THREE.Mesh(powerShellGeometry, glow(0.2)))
+  const core = createPowerUpIcon(kind, new THREE.MeshBasicMaterial({ color: light, toneMapped: false }))
+  core.name = 'core'
+  group.add(core)
+  const ring = new THREE.Mesh(powerRingGeometry, glow(0.85))
+  ring.name = 'ring'
+  ring.rotation.x = 1.15
+  for (let spark = 0; spark < 3; spark += 1) {
+    const angle = (spark / 3) * Math.PI * 2
+    const bead = new THREE.Mesh(powerSparkGeometry, new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: false }))
+    bead.position.set(Math.cos(angle) * 12.5, Math.sin(angle) * 12.5, 0)
+    ring.add(bead)
+  }
+  group.add(ring)
+  const halo = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTexture, color, transparent: true, opacity: 0.5, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false }))
+  halo.scale.setScalar(30)
+  group.add(halo)
+  const beam = new THREE.Mesh(powerBeamGeometry, glow(0.16))
+  beam.material.side = THREE.DoubleSide
+  beam.position.y = 110
+  group.add(beam)
+  return group
+}
+
+function showPowerUpNote(title: string, copy: string, color: number, now: number): void {
+  powerNote.innerHTML = `<strong>${title}</strong><span>${copy}</span>`
+  powerNote.style.setProperty('--pu', `#${color.toString(16).padStart(6, '0')}`)
+  powerNote.classList.add('is-visible')
+  powerNoteUntil = now + 2800
+}
+
+function removePowerUp(index: number): void {
+  const pickup = powerPickups[index]
+  scene.remove(pickup.group)
+  pickup.group.traverse((part) => {
+    if (part instanceof THREE.Mesh || part instanceof THREE.Sprite) (part.material as THREE.Material).dispose()
+  })
+  powerPickups.splice(index, 1)
+}
+
+function clearPowerUps(): void {
+  while (powerPickups.length > 0) removePowerUp(0)
+  for (const kind of POWERUP_KINDS) powerEffects[kind] = 0
+  nextPowerUpAt = performance.now() + 8000 + random() * 6000
+  lastPowerListKey = ''
+  powerList.innerHTML = ''
+  powerNote.classList.remove('is-visible')
+  powerAura.visible = false
+}
+
+function novaBlast(now: number): void {
+  const range = 1600
+  spawnPopFlash(hitCenter.set(flight.x, flight.y, flight.z), 900, POWERUPS.nova.color)
+  for (const actor of enemyActors) {
+    if (!actor.alive) continue
+    if ((actor.enemy.x - flight.x) ** 2 + (actor.enemy.y - flight.y) ** 2 + (actor.enemy.z - flight.z) ** 2 > range * range) continue
+    const kind = actor.enemy.kind
+    popEnemy(actor, now)
+    awardScore(kind, now)
+  }
+  for (let index = enemyBullets.length - 1; index >= 0; index -= 1) {
+    const bullet = enemyBullets[index]
+    if (bullet.mesh.position.distanceToSquared(hitCenter.set(flight.x, flight.y, flight.z)) > range * range) continue
+    scene.remove(bullet.mesh)
+    enemyBullets.splice(index, 1)
+  }
+  if (boss && (boss.x - flight.x) ** 2 + (boss.y - flight.y) ** 2 + (boss.z - flight.z) ** 2 < range * range) {
+    for (let blast = 0; blast < 4 && boss; blast += 1) {
+      const center = new THREE.Vector3(boss.x, boss.y, boss.z)
+      hitBoss(center, center, now)
+    }
+  }
+}
+
+function collectPowerUp(index: number, now: number): void {
+  const pickup = powerPickups[index]
+  const def = POWERUPS[pickup.kind]
+  spawnPopFlash(hitCenter.set(pickup.x, pickup.y, pickup.z), 160, def.color)
+  audio.pickup()
+  if (!activatePowerUp(powerEffects, pickup.kind, now)) novaBlast(now)
+  showPowerUpNote(def.name, def.blurb, def.color, now)
+  removePowerUp(index)
+}
+
+function updatePowerUps(now: number, delta: number): void {
+  if (now >= nextPowerUpAt && powerPickups.length < POWERUP_MAX_PICKUPS) {
+    const spot = powerUpSpawnPoint(flight, pickPowerUpKind(random), now, random)
+    spot.y = Math.max(spot.y, terrainHeight(spot.x, spot.z) + 220)
+    const group = createPowerUpModel(spot.kind)
+    scene.add(group)
+    powerPickups.push({ ...spot, group })
+    nextPowerUpAt = now + nextSpawnDelayMs(random)
+  } else if (now >= nextPowerUpAt) {
+    nextPowerUpAt = now + 4000
+  }
+
+  for (let index = powerPickups.length - 1; index >= 0; index -= 1) {
+    const pickup = powerPickups[index]
+    if (pickupExpired(pickup, now) || Math.hypot(pickup.x - flight.x, pickup.z - flight.z) > 5200) {
+      removePowerUp(index)
+      continue
+    }
+    if (inPickupRange(pickup, flight)) {
+      collectPowerUp(index, now)
+      continue
+    }
+    const time = now * 0.001
+    pickup.group.position.set(pickup.x, pickup.y + Math.sin(time * 2 + pickup.x) * 8, pickup.z)
+    pickup.group.getObjectByName('core')!.rotation.y += delta * 2.4
+    pickup.group.getObjectByName('ring')!.rotation.z += delta * 2.2
+    pickup.group.visible = !pickupFading(pickup, now) || Math.floor(now / 180) % 2 === 0
+  }
+
+  if (powerNote.classList.contains('is-visible') && now > powerNoteUntil) powerNote.classList.remove('is-visible')
+
+  const shielded = isPowerUpActive(powerEffects, 'shield', now)
+  const ghosted = isPowerUpActive(powerEffects, 'ghost', now)
+  powerAura.visible = shielded || ghosted
+  if (powerAura.visible) {
+    powerAuraMaterial.color.setHex(shielded ? POWERUPS.shield.color : POWERUPS.ghost.color)
+    powerAuraMaterial.opacity = (shielded ? 0.75 : 0.45) + Math.sin(now * 0.008) * 0.2
+    powerAura.rotation.y += delta * 1.8
+  }
+
+  const active = POWERUP_KINDS.filter((kind) => isPowerUpActive(powerEffects, kind, now))
+  const key = active.map((kind) => `${kind}${Math.ceil(powerUpRemaining(powerEffects, kind, now))}`).join('|')
+  if (key !== lastPowerListKey) {
+    lastPowerListKey = key
+    powerList.innerHTML = active.map((kind) => {
+      const def = POWERUPS[kind]
+      const fraction = Math.min(1, powerUpRemaining(powerEffects, kind, now) / def.seconds)
+      return `<div class="powerup-chip" style="--pu:#${def.color.toString(16).padStart(6, '0')}"><span>${def.name}</span><b>${Math.ceil(powerUpRemaining(powerEffects, kind, now))}s</b><i style="transform:scaleX(${fraction.toFixed(2)})"></i></div>`
+    }).join('')
+  }
+}
+
 const pressedKeys = new Set<string>()
 let touchRoll = 0
 let touchPitch = 0
@@ -2736,6 +2953,7 @@ function resetFlight(): void {
   for (const projectile of activeProjectiles.splice(0)) scene.remove(projectile.mesh)
   for (const bullet of enemyBullets.splice(0)) scene.remove(bullet.mesh)
   clearBoss()
+  clearPowerUps()
   for (const actor of enemyActors) {
     actor.alive = false
     actor.group.visible = false
@@ -2843,14 +3061,18 @@ let previousFrame = performance.now()
 function render(now: number): void {
   const delta = Math.min((now - previousFrame) / 1000, 0.05)
   previousFrame = now
+  if (paused) {
+    shiftPowerUpTimers(powerEffects, powerPickups, delta * 1000)
+    nextPowerUpAt += delta * 1000
+  }
 
   if (!paused) {
     const scraped = stepFlight(flight, {
       roll: controlValue(['ArrowLeft', 'KeyA'], ['ArrowRight', 'KeyD'], touchRoll),
       pitch: controlValue(['ArrowDown', 'KeyS'], ['ArrowUp', 'KeyW'], touchPitch),
-      boost: touchBoost || pressedKeys.has('Space') || pressedKeys.has('ShiftLeft') || pressedKeys.has('ShiftRight'),
+      boost: touchBoost || pressedKeys.has('Space') || pressedKeys.has('ShiftLeft') || pressedKeys.has('ShiftRight') || isPowerUpActive(powerEffects, 'turbo', now),
     }, delta)
-    const tower = resolveTowerCollision(flight, activeTowers)
+    const tower = isPowerUpActive(powerEffects, 'ghost', now) ? null : resolveTowerCollision(flight, activeTowers)
     if (tower) damagePlayer(now, 'tower')
     else if (scraped) damagePlayer(now, 'cliff')
   }
@@ -2868,9 +3090,10 @@ function render(now: number): void {
     if (touchFire || pressedKeys.has('KeyF')) fireProjectile(now)
     updateProjectiles(now, delta)
     updateAsteroids(now, delta)
-    updateEnemies(now, delta)
-    updateEnemyBullets(now, delta)
-    updateBoss(now, delta)
+    updateEnemies(now, delta * enemyTimeScale(powerEffects, now))
+    updateEnemyBullets(now, delta * enemyTimeScale(powerEffects, now))
+    updateBoss(now, delta * enemyTimeScale(powerEffects, now))
+    updatePowerUps(now, delta)
   }
   updatePopFlashes(now)
   updateDebris(delta)

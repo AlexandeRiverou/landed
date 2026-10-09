@@ -35,6 +35,7 @@ export interface AudioEngine {
   explosion: (size: number) => void
   hit: () => void
   chime: () => void
+  pickup: () => void
 }
 
 const CHORD_SECONDS = 9
@@ -174,6 +175,11 @@ export function createAudio(seed: number): AudioEngine {
       if (!context || muted) return
       burst(0.3, 700, 0.35, 120)
       blip(160, 60, 0.3, 0.3, 'sawtooth')
+    },
+    pickup() {
+      if (!context || muted) return
+      blip(520, 1040, 0.16, 0.14, 'sine')
+      voice(1318, context.currentTime + 0.1, 0.5, 0.1, 'triangle', sfxBus)
     },
     chime() {
       if (!context || muted) return
