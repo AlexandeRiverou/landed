@@ -19,6 +19,29 @@ describe('objective world events', () => {
     )
   })
 
+  it('offers a big roster where every event is visually and verbally unique', () => {
+    const events = Array.from({ length: worldEventCount() }, (_, index) => worldEventForObjective(index))
+    assert.ok(events.length >= 24)
+    assert.equal(new Set(events.map((event) => event.message)).size, events.length)
+    const looks = events.map((event) => [event.skyTop, event.skyHorizon, event.groundTint, event.waterTint, event.particles, event.moonColor, event.moonScale, event.rainColor, event.disco].join('|'))
+    assert.equal(new Set(looks).size, events.length)
+  })
+
+  it('keeps the special effects valid and a few events with real gameplay twists', () => {
+    const events = Array.from({ length: worldEventCount() }, (_, index) => worldEventForObjective(index))
+    for (const event of events) {
+      assert.ok(event.scoreMultiplier >= 1 && event.scoreMultiplier <= 3)
+      assert.ok(event.moonScale >= 1 && event.moonScale <= 5)
+      assert.ok(event.night >= 0 && event.night <= 1 && event.storm >= 0 && event.storm <= 1)
+      if (event.rainColor !== null) assert.equal(event.rain, true)
+      if (event.moonColor !== null) assert.equal(event.moon, true)
+    }
+    assert.ok(events.some((event) => event.scoreMultiplier > 1))
+    assert.ok(events.some((event) => event.peace))
+    assert.ok(events.some((event) => event.disco))
+    assert.ok(new Set(events.map((event) => event.particles).filter(Boolean)).size >= 8)
+  })
+
   it('includes both night skies and weather events', () => {
     const events = Array.from({ length: worldEventCount() }, (_, index) => worldEventForObjective(index))
     assert.ok(events.some((event) => event.night > 0 && event.moon))

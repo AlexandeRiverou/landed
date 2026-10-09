@@ -90,12 +90,12 @@ describe('flight state', () => {
     const flight = createFlightState()
     for (let frame = 0; frame < 20; frame += 1) stepFlight(flight, { roll: 0, pitch: 0, boost: true }, 0.05)
     const firstSecondSpeed = flight.speed
-    assert.ok(firstSecondSpeed > 95)
-    assert.ok(firstSecondSpeed < 110)
+    assert.ok(firstSecondSpeed > 130)
+    assert.ok(firstSecondSpeed < 150)
 
     for (let frame = 0; frame < 80; frame += 1) stepFlight(flight, { roll: 0, pitch: 0, boost: true }, 0.05)
     assert.ok(flight.speed > firstSecondSpeed)
-    assert.equal(flight.speed, 192)
+    assert.equal(flight.speed, 320)
 
     for (let frame = 0; frame < 100; frame += 1) stepFlight(flight, { roll: 0, pitch: 0, boost: false }, 0.05)
     assert.equal(flight.speed, 64)

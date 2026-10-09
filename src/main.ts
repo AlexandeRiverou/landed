@@ -7,8 +7,9 @@ import { segmentHitsSphere } from './collision'
 import { resolveTowerCollision } from './obstacles'
 import { createEnemy, ENEMY_STATS, stepEnemy, type Enemy, type EnemyKind } from './enemies'
 import { createAudio } from './audio'
-import { applyScore, createScore, ringBonus, type ScoreKey } from './score'
-import { worldEventForObjective, type WorldEvent } from './world-events'
+import { BOSS_STATS, bossDue, bossEnraged, createBoss, damageBoss, stepBoss, type Boss, type BossKind } from './bosses'
+import { applyScore, createScore, ringBonus, SCORE_RULES, type ScoreKey } from './score'
+import { worldEventForObjective, type ParticleKind, type WorldEvent } from './world-events'
 import { createWorldSeed, generateCannons, generateFlyingThings, generateForest, generateRockField, generateSettlement, generateTowers, generateWaterfalls, setWorldSeed, type TowerSite, type WaterfallSite, terrainGridOrigin, terrainHeight, terrainNormalAt, waterCoverage, worldSeedOffset } from './world'
 
 const worldSeed = createWorldSeed()
@@ -60,6 +61,7 @@ app.innerHTML = `
 
     <div class="sightline" aria-hidden="true"><span></span><i></i><span></span></div>
     <div class="far-arrow" id="far-arrow" aria-hidden="true"><i id="far-arrow-head"></i><span id="far-arrow-range"></span></div>
+    <div class="boss-bar" id="boss-bar" aria-live="polite"><span id="boss-name"></span><div class="boss-track"><i id="boss-fill"></i></div></div>
     <div class="moment-toast" id="moment-toast" aria-live="polite" aria-hidden="true">
       <span id="moment-label">FIELD NOTE SAVED</span>
       <strong id="moment-title">THE SKY IS SMILING</strong>
@@ -100,12 +102,13 @@ const scorePop = document.querySelector<HTMLDivElement>('#score-pop')!
 const scoreState = createScore()
 
 function awardScore(key: ScoreKey, now: number, bonus = 0): void {
-  const result = applyScore(scoreState, key, now, bonus)
+  const result = applyScore(scoreState, key, now, bonus, activeWorldEvent?.scoreMultiplier ?? 1)
   scoreReadout.textContent = scoreState.score.toLocaleString('en-US')
-  const sign = result.delta >= 0 ? '+' : '\u2212'
+  const gain = SCORE_RULES[key].points > 0
+  const sign = gain ? '+' : '\u2212'
   const combo = result.multiplier > 1 ? ` x${result.multiplier.toFixed(2)}` : ''
   scorePop.textContent = `${sign}${Math.abs(result.delta)} ${result.label}${combo}`
-  scorePop.classList.toggle('is-loss', result.delta < 0)
+  scorePop.classList.toggle('is-loss', !gain)
   scorePop.classList.remove('is-visible')
   void scorePop.offsetWidth
   scorePop.classList.add('is-visible')
@@ -938,7 +941,8 @@ function updateFieldNote(now: number): void {
     waypointRing.visible = false
     resetPersuasionVisuals()
     startCloudCelebration(now, worldEvent)
-    nextFieldNoteAt = now + 11000
+    nextFieldNoteAt = bossDue(fieldNotesKept) ? Number.POSITIVE_INFINITY : now + 11000
+    if (bossDue(fieldNotesKept)) scheduleBoss(now)
   }
 }
 
@@ -1389,6 +1393,16 @@ function startWorldCelebration(now: number, worldEvent: WorldEvent): void {
   eventSkyHorizon.setHex(worldEvent.skyHorizon)
   eventGroundTint.setHex(worldEvent.groundTint)
   eventWaterTint.setHex(worldEvent.waterTint)
+  ;(moon.material as THREE.MeshBasicMaterial).color.setHex(worldEvent.moonColor ?? 0xf3e9ca)
+  moon.scale.setScalar(worldEvent.moonScale)
+  rainMaterial.color.setHex(worldEvent.rainColor ?? 0xbdd6eb)
+  configureParticles(worldEvent.particles, worldEvent.particleColor)
+  if (worldEvent.peace) {
+    for (const actor of enemyActors) {
+      actor.alive = false
+      actor.group.visible = false
+    }
+  }
   momentLabel.textContent = 'FIELD NOTE SAVED'
   momentTitle.textContent = worldEvent.title
   if (worldEvent.asteroids) {
@@ -1406,6 +1420,12 @@ function updateWorldCelebration(now: number): void {
   if (!activeWorldEvent) return
 
   const elapsed = now - worldCelebrationStartedAt
+  if (activeWorldEvent.disco) {
+    const hue = (now * 0.00007) % 1
+    eventGroundTint.setHSL(hue, 0.95, 0.55)
+    eventWaterTint.setHSL((hue + 0.5) % 1, 0.95, 0.55)
+    eventSkyHorizon.setHSL((hue + 0.18) % 1, 0.7, 0.45)
+  }
   const eventMix = THREE.MathUtils.smoothstep(elapsed / 1200, 0, 1)
   ;(terrainMaterial.uniforms.uFestival.value as number) = eventMix
   updateCelebrationFlowers(now)
@@ -1570,8 +1590,89 @@ rain.frustumCulled = false
 rain.visible = false
 scene.add(rain)
 
+interface ParticleStyle {
+  velocity: [number, number, number]
+  sway: number
+  size: number
+  color: number
+  additive: boolean
+  count: number
+  opacity: number
+}
+
+const particleStyles: Record<ParticleKind, ParticleStyle> = {
+  snow: { velocity: [0, -24, 0], sway: 14, size: 10, color: 0xffffff, additive: false, count: 520, opacity: 0.9 },
+  confetti: { velocity: [0, -38, 0], sway: 26, size: 16, color: 0xffffff, additive: false, count: 460, opacity: 1 },
+  petals: { velocity: [18, -20, 0], sway: 30, size: 14, color: 0xffb7d1, additive: false, count: 420, opacity: 0.95 },
+  embers: { velocity: [0, 34, 0], sway: 12, size: 8, color: 0xff7a2a, additive: true, count: 420, opacity: 1 },
+  ash: { velocity: [0, -15, 6], sway: 8, size: 7, color: 0xb8b0a8, additive: false, count: 520, opacity: 0.8 },
+  bubbles: { velocity: [0, 28, 0], sway: 14, size: 13, color: 0xdff8ff, additive: true, count: 300, opacity: 0.55 },
+  fireflies: { velocity: [0, 0, 0], sway: 44, size: 11, color: 0xe6ff7a, additive: true, count: 360, opacity: 1 },
+  meteors: { velocity: [330, -290, 0], sway: 0, size: 12, color: 0xfff0c0, additive: true, count: 120, opacity: 1 },
+  sparks: { velocity: [0, 42, 0], sway: 18, size: 9, color: 0xffd24a, additive: true, count: 440, opacity: 1 },
+}
+const particleCapacity = 520
+const PARTICLE_SPAN = 1300
+const PARTICLE_RISE = 650
+const particlePositions = new Float32Array(particleCapacity * 3)
+const particleColors = new Float32Array(particleCapacity * 3)
+const particleSeeds = new Float32Array(particleCapacity)
+const particleGeometry = new THREE.BufferGeometry()
+particleGeometry.setAttribute('position', new THREE.BufferAttribute(particlePositions, 3).setUsage(THREE.DynamicDrawUsage))
+particleGeometry.setAttribute('color', new THREE.BufferAttribute(particleColors, 3))
+const particleMaterial = new THREE.PointsMaterial({ size: 8, map: glowTexture, sizeAttenuation: true, vertexColors: true, transparent: true, opacity: 0, depthWrite: false })
+const particles = new THREE.Points(particleGeometry, particleMaterial)
+particles.frustumCulled = false
+particles.visible = false
+scene.add(particles)
+let particleStyle: ParticleStyle | null = null
+const particleTint = new THREE.Color()
+
+function configureParticles(kind: ParticleKind | null, colorOverride: number | null): void {
+  particleStyle = kind ? particleStyles[kind] : null
+  if (!kind || !particleStyle) return
+  particleMaterial.size = particleStyle.size * 1.7
+  particleMaterial.blending = particleStyle.additive ? THREE.AdditiveBlending : THREE.NormalBlending
+  particleMaterial.needsUpdate = true
+  particleGeometry.setDrawRange(0, particleStyle.count)
+  for (let index = 0; index < particleCapacity; index += 1) {
+    particlePositions[index * 3] = camera.position.x + (random() * 2 - 1) * PARTICLE_SPAN
+    particlePositions[index * 3 + 1] = camera.position.y + (random() * 2 - 1) * PARTICLE_RISE
+    particlePositions[index * 3 + 2] = camera.position.z + (random() * 2 - 1) * PARTICLE_SPAN
+    particleSeeds[index] = random()
+    if (kind === 'confetti') particleTint.setHSL(random(), 0.9, 0.6)
+    else particleTint.setHex(colorOverride ?? particleStyle.color).multiplyScalar(0.75 + random() * 0.25)
+    particleColors.set([particleTint.r, particleTint.g, particleTint.b], index * 3)
+  }
+  particleGeometry.attributes.color.needsUpdate = true
+}
+
+function wrapAround(value: number, center: number, half: number): number {
+  if (value > center + half) return value - half * 2
+  if (value < center - half) return value + half * 2
+  return value
+}
+
+function updateParticles(delta: number, eventMix: number, now: number): void {
+  particles.visible = Boolean(particleStyle) && eventMix > 0.05
+  if (!particleStyle || !particles.visible) return
+  particleMaterial.opacity = eventMix * particleStyle.opacity
+  const time = now * 0.001
+  const [vx, vy, vz] = particleStyle.velocity
+  for (let index = 0; index < particleStyle.count; index += 1) {
+    const seed = particleSeeds[index]
+    const offset = index * 3
+    const sway = particleStyle.sway
+    particlePositions[offset] = wrapAround(particlePositions[offset] + (vx + Math.sin(time * 0.9 + seed * 6.28) * sway) * delta, camera.position.x, PARTICLE_SPAN)
+    particlePositions[offset + 1] = wrapAround(particlePositions[offset + 1] + (vy * (0.6 + seed * 0.8) + Math.sin(time * 0.6 + seed * 9) * sway * 0.3) * delta, camera.position.y, PARTICLE_RISE)
+    particlePositions[offset + 2] = wrapAround(particlePositions[offset + 2] + (vz + Math.cos(time * 0.8 + seed * 6.28) * sway) * delta, camera.position.z, PARTICLE_SPAN)
+  }
+  particleGeometry.attributes.position.needsUpdate = true
+}
+
 function updateEventWeather(delta: number): void {
   const eventMix = terrainMaterial.uniforms.uFestival.value as number
+  updateParticles(delta, eventMix, performance.now())
   rain.visible = Boolean(activeWorldEvent?.rain && eventMix > 0.05)
   rainMaterial.opacity = (activeWorldEvent?.rain ?? false) ? eventMix * 0.64 : 0
   if (!rain.visible) return
@@ -1934,7 +2035,7 @@ function updateDamage(now: number): void {
     damageForward.set(0, 0, -1).applyQuaternion(glider.quaternion)
     damageSmokePosition.set(Math.random() < 0.5 ? -9 : 9, -1, 4).applyQuaternion(glider.quaternion).add(glider.position)
     damageSmokeVelocity.set(0, 4 + Math.random() * 5, 0).addScaledVector(damageForward, -14)
-    spawnDebris(damageSmokePosition, damageSmokeVelocity, 2.4 + Math.random() * 1.2, 0.9, 0x4a4742, -3, true)
+    spawnDebris(damageSmokePosition, damageSmokeVelocity, 1.6 + Math.random() * 0.8, 0.4, 0x4a4742, -3, true)
   }
 }
 
@@ -2120,6 +2221,7 @@ function updateProjectiles(now: number, delta: number): void {
       }
     }
     if (!hit) hit = hitEnemy(projectileStart, end, now)
+    if (!hit) hit = hitBoss(projectileStart, end, now)
     if (!hit && asteroidsActive) {
       for (const asteroid of asteroidStates) {
         if (asteroid.popped) continue
@@ -2174,6 +2276,7 @@ interface EnemyBullet {
   mesh: THREE.Mesh
   velocity: THREE.Vector3
   spawnedAt: number
+  life?: number
 }
 
 const enemyActors: EnemyActor[] = []
@@ -2303,7 +2406,7 @@ function updateEnemies(now: number, delta: number): void {
   }
   for (const actor of enemyActors) {
     if (!actor.alive) {
-      if (now >= actor.respawnAt) spawnEnemy(actor)
+      if (now >= actor.respawnAt && !bossBusy() && !activeWorldEvent?.peace) spawnEnemy(actor)
       continue
     }
     if (Math.hypot(actor.enemy.x - flight.x, actor.enemy.z - flight.z) > 6500) {
@@ -2329,11 +2432,274 @@ function updateEnemyBullets(now: number, delta: number): void {
     const end = bullet.mesh.position
     const struck = segmentHitsSphere(projectileStart.x, projectileStart.y, projectileStart.z, end.x, end.y, end.z, flight.x, flight.y, flight.z, 16)
     if (struck) damagePlayer(now, 'hit-by-shot')
-    if (struck || now - bullet.spawnedAt > ENEMY_BULLET_LIFETIME) {
+    if (struck || now - bullet.spawnedAt > (bullet.life ?? ENEMY_BULLET_LIFETIME)) {
       scene.remove(bullet.mesh)
       enemyBullets.splice(index, 1)
     }
   }
+}
+
+const bossBar = document.querySelector<HTMLDivElement>('#boss-bar')!
+const bossNameReadout = document.querySelector<HTMLSpanElement>('#boss-name')!
+const bossFill = document.querySelector<HTMLElement>('#boss-fill')!
+const bossBulletGeometry = new THREE.SphereGeometry(1, 10, 8)
+const bossBulletMaterials: Record<BossKind, THREE.MeshBasicMaterial> = {
+  dragon: new THREE.MeshBasicMaterial({ color: 0xff7a2a, toneMapped: false }),
+  mothership: new THREE.MeshBasicMaterial({ color: 0xff4fd8, toneMapped: false }),
+  manta: new THREE.MeshBasicMaterial({ color: 0x6de8ff, toneMapped: false }),
+}
+const bossBulletSize: Record<BossKind, number> = { dragon: 7, mothership: 5, manta: 6 }
+const bossWarnings: Record<BossKind, string> = {
+  dragon: 'WARNING: A DRAGON HAS HEARD ABOUT YOUR RINGS',
+  mothership: 'WARNING: A MOTHERSHIP IS PARKING OVERHEAD',
+  manta: 'WARNING: A THUNDER MANTA IS COMING IN HOT',
+}
+const BOSS_BULLET_LIFE = 7000
+
+let boss: Boss | null = null
+let bossGroup: THREE.Group | null = null
+let bossSpawnAt = Number.POSITIVE_INFINITY
+let bossesDefeated = 0
+let bossWarningUntil = 0
+const bossWings: THREE.Object3D[] = []
+const bossSegments: THREE.Object3D[] = []
+const bossSpinners: THREE.Object3D[] = []
+const bossBlasts: Array<{ at: number; x: number; y: number; z: number; size: number }> = []
+const bossAim = new THREE.Vector3()
+const bossSide = new THREE.Vector3()
+const bossStart = new THREE.Vector3()
+
+function bossBusy(): boolean {
+  return boss !== null || Number.isFinite(bossSpawnAt) || bossBlasts.length > 0
+}
+
+function bossMesh(geometry: THREE.BufferGeometry, material: THREE.Material, x = 0, y = 0, z = 0): THREE.Mesh {
+  const mesh = new THREE.Mesh(geometry, material)
+  mesh.position.set(x, y, z)
+  return mesh
+}
+
+function createBossModel(kind: BossKind): THREE.Group {
+  bossWings.length = 0
+  bossSegments.length = 0
+  bossSpinners.length = 0
+  const group = new THREE.Group()
+  const glow = (color: number) => new THREE.MeshBasicMaterial({ color, toneMapped: false })
+  const solid = (color: number, metalness = 0.15) => new THREE.MeshStandardMaterial({ color, roughness: 0.6, metalness, flatShading: true })
+  const sphere = new THREE.SphereGeometry(1, 14, 10)
+  const box = new THREE.BoxGeometry(1, 1, 1)
+  const put = (parent: THREE.Object3D, mesh: THREE.Mesh): THREE.Mesh => {
+    parent.add(mesh)
+    return mesh
+  }
+
+  if (kind === 'dragon') {
+    const scales = solid(0x7a2d2a)
+    const belly = solid(0xc9a15b)
+    const fire = glow(0xffb13a)
+    const head = bossMesh(sphere, scales)
+    head.scale.set(24, 18, 38)
+    group.add(head)
+    const jaw = bossMesh(box, belly, 0, -13, -10)
+    jaw.scale.set(22, 6, 40)
+    group.add(jaw)
+    for (const side of [-1, 1]) {
+      const horn = bossMesh(new THREE.ConeGeometry(5, 34, 6), belly, side * 12, 20, 14)
+      horn.rotation.x = 0.9
+      group.add(horn)
+      put(group, bossMesh(sphere, fire, side * 12, 6, -26)).scale.setScalar(4.5)
+    }
+    const mouth = bossMesh(sphere, fire, 0, -4, -38)
+    mouth.scale.setScalar(8)
+    group.add(mouth)
+    bossSpinners.push(mouth)
+    for (let index = 0; index < 10; index += 1) {
+      const size = 26 - index * 1.7
+      const segment = new THREE.Group()
+      segment.position.set(0, 0, 40 + index * 36)
+      const body = bossMesh(sphere, scales)
+      body.scale.set(size, size * 0.85, 26)
+      segment.add(body)
+      const spike = bossMesh(new THREE.ConeGeometry(size * 0.28, size * 0.9, 5), belly, 0, size * 0.85, 0)
+      segment.add(spike)
+      group.add(segment)
+      bossSegments.push(segment)
+    }
+    for (const side of [-1, 1]) {
+      const wing = new THREE.Group()
+      wing.position.set(side * 16, 10, 58)
+      const membrane = bossMesh(box, solid(0x9c3a2e), side * 80, 0, 6)
+      membrane.scale.set(160, 2.5, 92)
+      wing.add(membrane)
+      for (const finger of [-34, 0, 34]) {
+        const bone = bossMesh(box, belly, side * 80, 2, finger + 6)
+        bone.scale.set(164, 3.5, 4)
+        wing.add(bone)
+      }
+      group.add(wing)
+      bossWings.push(wing)
+    }
+  } else if (kind === 'mothership') {
+    const hull = solid(0x8d98a3, 0.5)
+    const disc = bossMesh(new THREE.CylinderGeometry(150, 200, 28, 36), hull)
+    group.add(disc)
+    group.add(bossMesh(new THREE.CylinderGeometry(70, 90, 20, 24), solid(0x4a525a, 0.5), 0, -22, 0))
+    const dome = bossMesh(new THREE.SphereGeometry(78, 24, 12, 0, Math.PI * 2, 0, Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0x66e6ff, transparent: true, opacity: 0.55, toneMapped: false }), 0, 14, 0)
+    group.add(dome)
+    const rim = bossMesh(new THREE.TorusGeometry(184, 6, 8, 48), glow(0xff4fd8))
+    rim.rotation.x = Math.PI / 2
+    group.add(rim)
+    const lights = new THREE.Group()
+    for (let index = 0; index < 16; index += 1) {
+      const angle = (index / 16) * Math.PI * 2
+      put(lights, bossMesh(sphere, glow(index % 2 ? 0xffd27a : 0x66e6ff), Math.cos(angle) * 190, -6, Math.sin(angle) * 190)).scale.setScalar(7)
+    }
+    group.add(lights)
+    bossSpinners.push(lights)
+    for (const angle of [0, 2.1, 4.2]) {
+      const cannon = bossMesh(new THREE.ConeGeometry(14, 44, 8), solid(0x343b39, 0.4), Math.cos(angle) * 70, -48, Math.sin(angle) * 70)
+      cannon.rotation.x = Math.PI
+      group.add(cannon)
+    }
+  } else {
+    const hide = solid(0x24425a, 0.25)
+    const body = bossMesh(sphere, hide)
+    body.scale.set(60, 13, 96)
+    group.add(body)
+    put(group, bossMesh(sphere, solid(0xb8d4e0), 0, -8, -10)).scale.set(46, 8, 74)
+    for (const side of [-1, 1]) {
+      const wing = new THREE.Group()
+      wing.position.set(side * 40, 0, 0)
+      const membrane = bossMesh(box, hide, side * 80, 0, 0)
+      membrane.scale.set(170, 4, 120)
+      wing.add(membrane)
+      const tip = bossMesh(box, solid(0x4f86a8), side * 170, 0, 30)
+      tip.scale.set(60, 3, 50)
+      wing.add(tip)
+      group.add(wing)
+      bossWings.push(wing)
+      put(group, bossMesh(sphere, glow(0x6de8ff), side * 18, 6, -66)).scale.setScalar(5.5)
+    }
+    const tail = bossMesh(new THREE.CylinderGeometry(2, 7, 230, 6), hide, 0, 0, 200)
+    tail.rotation.x = Math.PI / 2
+    group.add(tail)
+    for (const radius of [34, 54]) {
+      const ring = bossMesh(new THREE.TorusGeometry(radius, 2.2, 6, 28), glow(0x6de8ff), 0, 14, 0)
+      ring.rotation.x = Math.PI / 2
+      group.add(ring)
+      bossSpinners.push(ring)
+    }
+  }
+  return group
+}
+
+function scheduleBoss(now: number): void {
+  bossSpawnAt = now + 6500
+  bossWarningUntil = now + 5500
+  const kind = createBoss(bossesDefeated, 0, 0, 0).kind
+  bossNameReadout.textContent = bossWarnings[kind]
+  bossFill.style.transform = 'scaleX(1)'
+  bossBar.classList.add('is-visible', 'is-warning')
+}
+
+function spawnBoss(): void {
+  const bearing = flight.heading
+  const x = flight.x - Math.sin(bearing) * 1700
+  const z = flight.z - Math.cos(bearing) * 1700
+  boss = createBoss(bossesDefeated, x, Math.max(flight.y + 150, terrainHeight(x, z) + 320), z)
+  boss.angle = Math.atan2(z - flight.z, x - flight.x)
+  bossGroup = createBossModel(boss.kind)
+  scene.add(bossGroup)
+  bossSpawnAt = Number.POSITIVE_INFINITY
+  bossNameReadout.textContent = BOSS_STATS[boss.kind].name
+  bossBar.classList.remove('is-warning')
+}
+
+function clearBoss(): void {
+  if (bossGroup) scene.remove(bossGroup)
+  bossGroup = null
+  boss = null
+  bossSpawnAt = Number.POSITIVE_INFINITY
+  bossBlasts.length = 0
+  bossBar.classList.remove('is-visible', 'is-warning')
+}
+
+function fireBossAttack(attack: { count: number; spread: number; speed: number }, now: number): void {
+  if (!boss) return
+  bossAim.set(flight.x - boss.x, flight.y - boss.y, flight.z - boss.z).normalize()
+  bossSide.set(-bossAim.z, 0, bossAim.x).normalize()
+  audio.enemyShot()
+  for (let shot = 0; shot < attack.count; shot += 1) {
+    const offset = (shot - (attack.count - 1) / 2) * attack.spread
+    const velocity = bossAim.clone().addScaledVector(bossSide, offset).normalize()
+    const mesh = new THREE.Mesh(bossBulletGeometry, bossBulletMaterials[boss.kind])
+    mesh.scale.setScalar(bossBulletSize[boss.kind])
+    mesh.position.set(boss.x, boss.y, boss.z).addScaledVector(velocity, BOSS_STATS[boss.kind].hitRadius * 0.7)
+    scene.add(mesh)
+    enemyBullets.push({ mesh, velocity: velocity.multiplyScalar(attack.speed), spawnedAt: now, life: BOSS_BULLET_LIFE })
+  }
+}
+
+function hitBoss(start: THREE.Vector3, end: THREE.Vector3, now: number): boolean {
+  if (!boss || !bossGroup) return false
+  const stats = BOSS_STATS[boss.kind]
+  if (!segmentHitsSphere(start.x, start.y, start.z, end.x, end.y, end.z, boss.x, boss.y, boss.z, stats.hitRadius)) return false
+  bossStart.copy(end)
+  spawnPopFlash(bossStart, 34, 0xffd27a)
+  if (!damageBoss(boss)) return true
+  const { x, y, z } = boss
+  const size = stats.hitRadius * 0.9
+  for (let blast = 0; blast < 9; blast += 1) {
+    bossBlasts.push({ at: now + blast * 260, x: x + (Math.random() - 0.5) * stats.hitRadius * 1.6, y: y + (Math.random() - 0.5) * stats.hitRadius * 0.8, z: z + (Math.random() - 0.5) * stats.hitRadius * 1.6, size: size * (blast === 8 ? 2 : 0.7) })
+  }
+  scene.remove(bossGroup)
+  bossGroup = null
+  boss = null
+  bossBar.classList.remove('is-visible')
+  awardScore('boss', now, bossesDefeated * 500)
+  bossesDefeated += 1
+  targetsPopped += 1
+  targetsPoppedReadout.textContent = String(targetsPopped)
+  nextFieldNoteAt = now + 9000
+  return true
+}
+
+function updateBoss(now: number, delta: number): void {
+  if (!boss && now >= bossSpawnAt) spawnBoss()
+  if (bossBar.classList.contains('is-warning') && now > bossWarningUntil && boss) bossBar.classList.remove('is-warning')
+  for (let index = bossBlasts.length - 1; index >= 0; index -= 1) {
+    const blast = bossBlasts[index]
+    if (now < blast.at) continue
+    explode(bossStart.set(blast.x, blast.y, blast.z), blast.size, fireDebris)
+    bossBlasts.splice(index, 1)
+  }
+  if (!boss || !bossGroup) return
+
+  const attack = stepBoss(boss, flight, delta)
+  if (attack) fireBossAttack(attack, now)
+  bossGroup.position.set(boss.x, boss.y, boss.z)
+  bossGroup.rotation.set(0, boss.heading, 0)
+  bossFill.style.transform = `scaleX(${boss.health / boss.maxHealth})`
+  bossBar.classList.toggle('is-enraged', bossEnraged(boss))
+
+  const time = now * 0.001
+  bossWings.forEach((wing, index) => {
+    wing.rotation.z = Math.sin(time * (boss!.kind === 'dragon' ? 3.2 : 1.6)) * 0.42 * (index === 0 ? -1 : 1)
+  })
+  bossSegments.forEach((segment, index) => {
+    segment.position.x = Math.sin(time * 2.4 - index * 0.6) * 14
+  })
+  for (const spinner of bossSpinners) {
+    if (boss.kind === 'mothership') spinner.rotation.y = time * 0.8
+    else if (boss.kind === 'manta') spinner.rotation.z = time * 2
+    else spinner.scale.setScalar(8 + Math.sin(time * 6) * 2)
+  }
+}
+
+function checkBossCollision(now: number): void {
+  if (!boss) return
+  const reach = BOSS_STATS[boss.kind].hitRadius * 0.85 + 18
+  if ((boss.x - flight.x) ** 2 + (boss.y - flight.y) ** 2 + (boss.z - flight.z) ** 2 < reach * reach) damagePlayer(now, 'ram-enemy')
 }
 
 const pressedKeys = new Set<string>()
@@ -2369,6 +2735,7 @@ function resetFlight(): void {
   damageCooldownUntil = 0
   for (const projectile of activeProjectiles.splice(0)) scene.remove(projectile.mesh)
   for (const bullet of enemyBullets.splice(0)) scene.remove(bullet.mesh)
+  clearBoss()
   for (const actor of enemyActors) {
     actor.alive = false
     actor.group.visible = false
@@ -2503,6 +2870,7 @@ function render(now: number): void {
     updateAsteroids(now, delta)
     updateEnemies(now, delta)
     updateEnemyBullets(now, delta)
+    updateBoss(now, delta)
   }
   updatePopFlashes(now)
   updateDebris(delta)
@@ -2531,7 +2899,10 @@ function render(now: number): void {
   }
 
   updateTraffic(delta, now)
-  if (!paused) checkPlayerCollisions(now)
+  if (!paused) {
+    checkPlayerCollisions(now)
+    checkBossCollision(now)
+  }
   updateFieldNote(now)
   updateWorldCelebration(now)
   updateEventWeather(delta)

@@ -3,6 +3,7 @@ export type ScoreKey =
   | 'tree' | 'rock' | 'house' | 'car' | 'cannon'
   | 'drone' | 'interceptor' | 'gunship'
   | 'ring'
+  | 'boss'
   | 'hit-by-shot' | 'crash-traffic' | 'crash-asteroid' | 'ram-enemy' | 'tower' | 'cliff'
 
 interface ScoreRule {
@@ -28,6 +29,7 @@ export const SCORE_RULES: Record<ScoreKey, ScoreRule> = {
   interceptor: { points: 275, label: 'INTERCEPTOR DOWN', combo: true },
   gunship: { points: 600, label: 'GUNSHIP DOWN', combo: true },
   ring: { points: 500, label: 'RING CLEARED', combo: false },
+  boss: { points: 2500, label: 'BOSS DEFEATED', combo: false },
   'hit-by-shot': { points: -100, label: 'TAKEN A HIT', combo: false },
   'crash-traffic': { points: -75, label: 'MIDAIR BUMP', combo: false },
   'crash-asteroid': { points: -60, label: 'ROCK RASH', combo: false },
@@ -56,7 +58,7 @@ export function createScore(): ScoreState {
 }
 
 // Ring bonus rewards quick, boosted passes; the score never drops below zero.
-export function applyScore(state: ScoreState, key: ScoreKey, now: number, bonus = 0): ScoreResult {
+export function applyScore(state: ScoreState, key: ScoreKey, now: number, bonus = 0, boost = 1): ScoreResult {
   const rule = SCORE_RULES[key]
   let multiplier = 1
   let delta = rule.points + bonus
@@ -67,6 +69,10 @@ export function applyScore(state: ScoreState, key: ScoreKey, now: number, bonus 
     delta = Math.round(delta * multiplier)
   } else if (rule.points < 0) {
     state.combo = 0
+  }
+  if (delta > 0 && boost !== 1) {
+    delta = Math.round(delta * boost)
+    multiplier *= boost
   }
   const next = Math.max(0, state.score + delta)
   const result = { delta: next - state.score, label: rule.label, multiplier }

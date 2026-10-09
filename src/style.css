@@ -237,3 +237,11 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
+
+.boss-bar { position: absolute; z-index: 3; top: 92px; left: 50%; display: flex; flex-direction: column; align-items: center; gap: 8px; width: min(420px, 70vw); transform: translateX(-50%); opacity: 0; pointer-events: none; transition: opacity 400ms ease; color: #fff3d6; text-shadow: 0 1px 6px rgb(0 0 0 / 55%); font: 700 11px/1 "SFMono-Regular", Consolas, monospace; letter-spacing: .14em; text-align: center; }
+.boss-bar.is-visible { opacity: .95; }
+.boss-track { width: 100%; height: 8px; border: 1px solid rgb(255 243 214 / 70%); background: rgb(20 20 20 / 45%); }
+.boss-track i { display: block; width: 100%; height: 100%; background: #d8432f; transform-origin: left; transition: transform 160ms linear; }
+.boss-bar.is-enraged .boss-track i { background: #ff9a2a; animation: hull-pulse 500ms ease-in-out infinite; }
+.boss-bar.is-warning { animation: hull-pulse 700ms ease-in-out infinite; }
+.boss-bar.is-warning .boss-track { visibility: hidden; }

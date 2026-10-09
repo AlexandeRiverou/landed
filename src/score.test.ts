@@ -31,6 +31,12 @@ describe('score', () => {
     assert.equal(poor.score, 0)
   })
 
+  it('applies a world-event boost to gains but never to losses', () => {
+    const state = createScore()
+    assert.equal(applyScore(state, 'drone', 0, 0, 2).delta, 300)
+    assert.equal(applyScore(state, 'hit-by-shot', 10, 0, 2).delta, -100)
+  })
+
   it('adds a ring bonus that shrinks as the ring is ignored and grows with boost', () => {
     assert.ok(ringBonus(0, false) > ringBonus(5, false))
     assert.equal(ringBonus(20, false), 0)
