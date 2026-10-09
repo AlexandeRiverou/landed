@@ -20,7 +20,7 @@ function seeded(seed: number): () => number {
   }
 }
 
-function ignoreEntirely(seed: number, seconds = 200): { events: PersuasionEvent[]; state: ReturnType<typeof createPersuasion> } {
+function ignoreEntirely(seed: number, seconds = 260): { events: PersuasionEvent[]; state: ReturnType<typeof createPersuasion> } {
   const random = seeded(seed)
   const state = createPersuasion(2000)
   const events: PersuasionEvent[] = []

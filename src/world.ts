@@ -35,6 +35,10 @@ function hash(x: number, z: number): number {
   return fract((a + b) * c)
 }
 
+export function worldHash(x: number, z: number): number {
+  return hash(x, z)
+}
+
 function smooth(value: number): number {
   return value * value * (3 - 2 * value)
 }
@@ -268,7 +272,7 @@ export interface TreePosition {
   autumn: number
 }
 
-export function generateForest(centerX: number, centerZ: number, maximum = 1600): TreePosition[] {
+export function generateForest(centerX: number, centerZ: number, maximum = 1600, density = 1): TreePosition[] {
   const trees: TreePosition[] = []
   const spacing = 76
   const halfSize = 3000
@@ -281,7 +285,7 @@ export function generateForest(centerX: number, centerZ: number, maximum = 1600)
     for (let cellZ = startZ; cellZ <= endZ && trees.length < maximum; cellZ += 1) {
       const x = (cellX + 0.12 + hash(cellX + 129.8, cellZ + 17.3) * 0.76) * spacing
       const z = (cellZ + 0.12 + hash(cellX + 43.6, cellZ + 341.2) * 0.76) * spacing
-      if (noise(x * 0.00048, z * 0.00048) < 0.43 || hash(cellX + 73.4, cellZ + 918.7) < 0.47) continue
+      if (noise(x * 0.00048, z * 0.00048) < 0.43 / Math.max(0.6, density) || hash(cellX + 73.4, cellZ + 918.7) < 1 - 0.53 * density) continue
 
       const height = terrainHeight(x, z)
       if (height < 130 || height > 600 || waterCoverage(x, z) > 0.05) continue
@@ -316,7 +320,7 @@ export interface RockPosition {
   rotation: number
 }
 
-export function generateRockField(centerX: number, centerZ: number, maximum = 420): RockPosition[] {
+export function generateRockField(centerX: number, centerZ: number, maximum = 420, density = 1): RockPosition[] {
   const rocks: RockPosition[] = []
   const spacing = 148
   const halfSize = 3000
@@ -329,7 +333,7 @@ export function generateRockField(centerX: number, centerZ: number, maximum = 42
     for (let cellZ = startZ; cellZ <= endZ && rocks.length < maximum; cellZ += 1) {
       const x = (cellX + 0.16 + hash(cellX + 73.8, cellZ + 91.3) * 0.68) * spacing
       const z = (cellZ + 0.16 + hash(cellX + 37.5, cellZ + 128.6) * 0.68) * spacing
-      if (noise(x * 0.0008, z * 0.0008) < 0.56 || hash(cellX + 344.9, cellZ + 54.1) < 0.38) continue
+      if (noise(x * 0.0008, z * 0.0008) < 0.56 / Math.max(0.6, density) || hash(cellX + 344.9, cellZ + 54.1) < 1 - 0.62 * density) continue
 
       const height = terrainHeight(x, z)
       if (height < 520 || height > 1420 || waterCoverage(x, z) > 0.05) continue
@@ -355,7 +359,7 @@ export interface TowerSite {
   radius: number
 }
 
-export function generateTowers(centerX: number, centerZ: number, maximum = 16): TowerSite[] {
+export function generateTowers(centerX: number, centerZ: number, maximum = 16, density = 1): TowerSite[] {
   const towers: TowerSite[] = []
   const spacing = 1300
   const halfSize = 3000
@@ -366,7 +370,7 @@ export function generateTowers(centerX: number, centerZ: number, maximum = 16): 
 
   for (let cellX = startX; cellX <= endX && towers.length < maximum; cellX += 1) {
     for (let cellZ = startZ; cellZ <= endZ && towers.length < maximum; cellZ += 1) {
-      if (hash(cellX + 601.3, cellZ + 71.9) < 0.74) continue
+      if (hash(cellX + 601.3, cellZ + 71.9) < 1 - 0.26 * density) continue
       const x = (cellX + 0.2 + hash(cellX + 17.4, cellZ + 803.1) * 0.6) * spacing
       const z = (cellZ + 0.2 + hash(cellX + 509.6, cellZ + 33.2) * 0.6) * spacing
       const base = terrainHeight(x, z)
@@ -420,7 +424,7 @@ export interface CannonSite {
   rotation: number
 }
 
-export function generateCannons(centerX: number, centerZ: number, maximum = 12): CannonSite[] {
+export function generateCannons(centerX: number, centerZ: number, maximum = 12, density = 1): CannonSite[] {
   const cannons: CannonSite[] = []
   const spacing = 980
   const halfSize = 3000
@@ -431,7 +435,7 @@ export function generateCannons(centerX: number, centerZ: number, maximum = 12):
 
   for (let cellX = startX; cellX <= endX && cannons.length < maximum; cellX += 1) {
     for (let cellZ = startZ; cellZ <= endZ && cannons.length < maximum; cellZ += 1) {
-      if (noise(cellX + 82.7, cellZ + 19.3) < 0.38) continue
+      if (noise(cellX + 82.7, cellZ + 19.3) < 1 - 0.62 * density) continue
       const x = (cellX + 0.18 + hash(cellX + 731.2, cellZ + 51.8) * 0.64) * spacing
       const z = (cellZ + 0.18 + hash(cellX + 31.4, cellZ + 743.6) * 0.64) * spacing
       const height = terrainHeight(x, z)
@@ -454,15 +458,6 @@ export function generateCannons(centerX: number, centerZ: number, maximum = 12):
   return cannons
 }
 
-export interface SettlementRoad {
-  x: number
-  z: number
-  height: number
-  rotation: number
-  length: number
-  width: number
-}
-
 export interface BuildingSite {
   x: number
   z: number
@@ -472,23 +467,11 @@ export interface BuildingSite {
   kind: 'cottage' | 'house' | 'shop' | 'barn'
 }
 
-export interface RoadCarSite {
-  x: number
-  z: number
-  height: number
-  rotation: number
-  phase: number
-  speed: number
-  color: number
-}
-
 export interface SettlementLayout {
   centerX: number
   centerZ: number
   rotation: number
-  roads: SettlementRoad[]
   buildings: BuildingSite[]
-  cars: RoadCarSite[]
 }
 
 export function generateSettlement(centerX: number, centerZ: number): SettlementLayout {
@@ -510,31 +493,6 @@ export function generateSettlement(centerX: number, centerZ: number): Settlement
     x: townX + localX * Math.cos(rotation) + localZ * Math.sin(rotation),
     z: townZ - localX * Math.sin(rotation) + localZ * Math.cos(rotation),
   })
-  const roads: SettlementRoad[] = []
-  const roadLength = 120
-  const roadWidth = 15
-
-  const addStreet = (localX: number, localZ: number, angle: number) => {
-    const position = toWorld(localX, localZ)
-    const halfLength = roadLength * 0.48
-    const xA = position.x - Math.cos(angle) * halfLength
-    const zA = position.z + Math.sin(angle) * halfLength
-    const xB = position.x + Math.cos(angle) * halfLength
-    const zB = position.z - Math.sin(angle) * halfLength
-    const startHeight = terrainHeight(xA, zA)
-    const endHeight = terrainHeight(xB, zB)
-    const height = terrainHeight(position.x, position.z)
-    if (height > 760 || waterCoverage(position.x, position.z) > 0.04 || Math.abs(startHeight - endHeight) > 28) return
-    roads.push({ x: position.x, z: position.z, height, rotation: angle, length: roadLength, width: roadWidth })
-  }
-
-  for (const streetZ of [-300, -150, 0, 150, 300]) {
-    for (let streetX = -360; streetX <= 360; streetX += roadLength) addStreet(streetX, streetZ, rotation)
-  }
-  for (const streetX of [-300, -150, 0, 150, 300]) {
-    for (let streetZ = -360; streetZ <= 360; streetZ += roadLength) addStreet(streetX, streetZ, rotation + Math.PI / 2)
-  }
-
   const buildings: BuildingSite[] = []
   const buildingKinds: BuildingSite['kind'][] = ['cottage', 'house', 'shop', 'barn']
   for (let localZ = -390; localZ <= 390; localZ += 130) {
@@ -556,22 +514,5 @@ export function generateSettlement(centerX: number, centerZ: number): Settlement
     }
   }
 
-  const cars: RoadCarSite[] = []
-  for (let index = 0; index < 8; index += 1) {
-    const localX = -315 + index * 90
-    const position = toWorld(localX, -7 + (index % 2) * 14)
-    const height = terrainHeight(position.x, position.z)
-    if (waterCoverage(position.x, position.z) > 0.04 || height > 760) continue
-    cars.push({
-      x: position.x,
-      z: position.z,
-      height,
-      rotation: rotation + Math.PI / 2,
-      phase: hash(index + townX * 0.03, townZ * 0.02 + 33.3),
-      speed: 12 + hash(index + townZ * 0.017, townX * 0.021 + 16.9) * 22,
-      color: [0xc7543f, 0x477b8f, 0xd2a74f, 0x455b49][Math.floor(hash(index + 319.5, townX * 0.001 + townZ) * 4)],
-    })
-  }
-
-  return { centerX: townX, centerZ: townZ, rotation, roads, buildings, cars }
+  return { centerX: townX, centerZ: townZ, rotation, buildings }
 }

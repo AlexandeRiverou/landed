@@ -37,6 +37,16 @@ describe('score', () => {
     assert.equal(applyScore(state, 'hit-by-shot', 10, 0, 2).delta, -100)
   })
 
+  it('makes repeated damage cost more and forgives after a calm spell', () => {
+    const state = createScore()
+    state.score = 100000
+    const losses = [0, 1000, 2000, 3000].map((time) => applyScore(state, 'hit-by-shot', time).delta)
+    assert.deepEqual(losses, [-100, -160, -220, -280])
+    for (let index = 0; index < 12; index += 1) applyScore(state, 'hit-by-shot', 4000 + index * 500)
+    assert.equal(applyScore(state, 'hit-by-shot', 10000).delta, -Math.round(100 * (1 + 6 * 0.6)))
+    assert.equal(applyScore(state, 'hit-by-shot', 40000).delta, -100)
+  })
+
   it('adds a ring bonus that shrinks as the ring is ignored and grows with boost', () => {
     assert.ok(ringBonus(0, false) > ringBonus(5, false))
     assert.equal(ringBonus(20, false), 0)

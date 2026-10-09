@@ -5,15 +5,17 @@ import { createFieldNote, fieldNoteBearing, fieldNoteDistance, fieldNoteProgress
 import { createPersuasion, persuasionLook, resetPersuasionDistance, stepPersuasion, type PersuasionEvent } from './persuasion'
 import { segmentHitsSphere } from './collision'
 import { resolveTowerCollision } from './obstacles'
-import { createEnemy, ENEMY_STATS, stepEnemy, type Enemy, type EnemyKind } from './enemies'
+import { createEnemy, ENEMY_STATS, maxConcurrentEnemies, pickEnemyKind, stepEnemy, type Enemy, type EnemyKind } from './enemies'
 import { createAudio } from './audio'
 import {
   activatePowerUp, createEffects, drainPowerUps, enemyTimeScale, fireCooldownScale, inPickupRange, isPowerUpActive, nextSpawnDelayMs, pickPowerUpKind, pickupExpired, pickupFading,
   POWERUP_KINDS, POWERUP_HIT_PENALTY_MS, POWERUP_MAX_PICKUPS, powerUpRemaining, powerUpSpawnPoint, POWERUPS, scoreBoost, shiftPowerUpTimers, shotFan, type PowerUpKind, type PowerUpPickup,
 } from './powerups'
-import { BOSS_STATS, bossDue, bossEnraged, createBoss, damageBoss, stepBoss, type Boss, type BossKind } from './bosses'
+import { BOSS_STATS, bossDue, bossEnraged, createBoss, damageBoss, stepBoss, type Boss, type BossAttack, type BossKind } from './bosses'
 import { applyScore, createScore, ringBonus, SCORE_RULES, type ScoreKey } from './score'
 import { worldEventForObjective, type ParticleKind, type WorldEvent } from './world-events'
+import { applyLandscapeChange, createLandscape, generateLandmarks, LANDMARKS, landscapeChangeFor, type LandmarkKind, type LandmarkSite } from './landmarks'
+import { createLandmarkModel, type LandmarkModel } from './landmark-models'
 import { createWorldSeed, generateCannons, generateFlyingThings, generateForest, generateRockField, generateSettlement, generateTowers, generateWaterfalls, setWorldSeed, type TowerSite, type WaterfallSite, terrainGridOrigin, terrainHeight, terrainNormalAt, waterCoverage, worldSeedOffset } from './world'
 
 const worldSeed = createWorldSeed()
@@ -505,9 +507,6 @@ function createCannon(site: ReturnType<typeof generateCannons>[number]): THREE.G
 
 const townGroup = new THREE.Group()
 scene.add(townGroup)
-const roadSurface = new THREE.MeshStandardMaterial({ color: 0x55574f, roughness: 0.96, flatShading: true })
-const roadPaint = new THREE.MeshStandardMaterial({ color: 0xd8c98c, roughness: 0.88, flatShading: true })
-const roadGeometry = new THREE.BoxGeometry(1, 1, 1)
 const buildingGeometry = new THREE.BoxGeometry(1, 1, 1)
 const roofGeometry = new THREE.ConeGeometry(1, 1, 4)
 const foundationMaterial = new THREE.MeshStandardMaterial({ color: 0x6b6355, roughness: 1, flatShading: true })
@@ -524,16 +523,6 @@ const roofMaterials = [
 ]
 const windowMaterial = new THREE.MeshStandardMaterial({ color: 0x9dc8c5, roughness: 0.38, metalness: 0.15, flatShading: true })
 const doorMaterial = new THREE.MeshStandardMaterial({ color: 0x594435, roughness: 0.95, flatShading: true })
-const carMaterials = [
-  new THREE.MeshStandardMaterial({ color: 0xc7543f, roughness: 0.48, flatShading: true }),
-  new THREE.MeshStandardMaterial({ color: 0x477b8f, roughness: 0.48, flatShading: true }),
-  new THREE.MeshStandardMaterial({ color: 0xd2a74f, roughness: 0.48, flatShading: true }),
-  new THREE.MeshStandardMaterial({ color: 0x455b49, roughness: 0.48, flatShading: true }),
-]
-const carBodyGeometry = new THREE.BoxGeometry(25, 8, 13)
-const carCabinGeometry = new THREE.BoxGeometry(13, 7, 10)
-const carWheelGeometry = new THREE.CylinderGeometry(3.3, 3.3, 2.4, 8)
-const carActors: Array<{ group: THREE.Group; site: ReturnType<typeof generateSettlement>['cars'][number] }> = []
 
 function createTownBuilding(site: ReturnType<typeof generateSettlement>['buildings'][number]): THREE.Group {
   const group = new THREE.Group()
@@ -586,65 +575,6 @@ function createTownBuilding(site: ReturnType<typeof generateSettlement>['buildin
   }
 
   return group
-}
-
-function createTownCar(site: ReturnType<typeof generateSettlement>['cars'][number]): THREE.Group {
-  const car = new THREE.Group()
-  const colorIndex = [0xc7543f, 0x477b8f, 0xd2a74f, 0x455b49].indexOf(site.color)
-  const body = new THREE.Mesh(carBodyGeometry, carMaterials[Math.max(0, colorIndex)])
-  body.position.y = 7
-  car.add(body)
-  const cabin = new THREE.Mesh(carCabinGeometry, windowMaterial)
-  cabin.position.set(1.5, 14.2, 0)
-  car.add(cabin)
-  for (const x of [-7.5, 7.5]) {
-    for (const z of [-7, 7]) {
-      const wheel = new THREE.Mesh(carWheelGeometry, cannonIron)
-      wheel.position.set(x, 4, z)
-      wheel.rotation.z = Math.PI / 2
-      car.add(wheel)
-    }
-  }
-  return car
-}
-
-function updateTownCars(now: number): void {
-  const loopRadius = 300
-  const halfPerimeter = loopRadius * 2
-  const fullPerimeter = halfPerimeter * 4
-  for (const actor of carActors) {
-    if (!actor.group.parent) continue
-    const distance = (now * 0.006 * actor.site.speed + actor.site.phase * fullPerimeter) % fullPerimeter
-    const leg = Math.floor(distance / halfPerimeter)
-    const part = distance % halfPerimeter
-    let localX: number
-    let localZ: number
-    let direction: number
-    if (leg === 0) {
-      localX = -loopRadius + part
-      localZ = -loopRadius
-      direction = 0
-    } else if (leg === 1) {
-      localX = loopRadius
-      localZ = -loopRadius + part
-      direction = Math.PI / 2
-    } else if (leg === 2) {
-      localX = loopRadius - part
-      localZ = loopRadius
-      direction = Math.PI
-    } else {
-      localX = -loopRadius
-      localZ = loopRadius - part
-      direction = -Math.PI / 2
-    }
-
-    const cosine = Math.cos(actor.site.rotation)
-    const sine = Math.sin(actor.site.rotation)
-    const x = actor.site.x + localX * cosine + localZ * sine
-    const z = actor.site.z - localX * sine + localZ * cosine
-    actor.group.position.set(x, terrainHeight(x, z) + 5, z)
-    actor.group.rotation.y = actor.site.rotation + direction
-  }
 }
 
 const glider = new THREE.Group()
@@ -947,6 +877,10 @@ function updateFieldNote(now: number): void {
     waypointRing.visible = false
     resetPersuasionVisuals()
     startCloudCelebration(now, worldEvent)
+    const landscapeChange = landscapeChangeFor(fieldNotesKept - 1, worldSeed)
+    applyLandscapeChange(landscape, landscapeChange)
+    showPowerUpNote(`THE LAND SHIFTS: ${landscapeChange.title}`, landscapeChange.blurb, 0x9be37a, now)
+    powerNoteUntil = now + 6500
     nextFieldNoteAt = bossDue(fieldNotesKept) ? Number.POSITIVE_INFINITY : now + 11000
     if (bossDue(fieldNotesKept)) scheduleBoss(now)
   }
@@ -1065,7 +999,7 @@ function rebuildObstacles(centerX: number, centerZ: number): void {
     })
   }
   waterfallMists.length = 0
-  activeTowers = generateTowers(centerX, centerZ)
+  activeTowers = generateTowers(centerX, centerZ, 40, landscape.towerDensity)
   for (const site of activeTowers) towerGroup.add(createTower(site))
   for (const site of generateWaterfalls(centerX, centerZ)) waterfallGroup.add(createWaterfall(site))
 }
@@ -1083,6 +1017,81 @@ const treeTransform = new THREE.Object3D()
 const foliageColor = new THREE.Color()
 let forestRegionX = Number.NaN
 let forestRegionZ = Number.NaN
+let forestVersion = -1
+const landscape = createLandscape()
+const landmarkGroup = new THREE.Group()
+scene.add(landmarkGroup)
+interface LandmarkActor {
+  site: LandmarkSite
+  model: LandmarkModel
+  bornAt: number
+}
+const landmarkActors: LandmarkActor[] = []
+let knownLandmarkKeys = new Set<string>()
+const landmarkDebrisColors = {
+  crystal: [0xff7ae0, 0x7ae6ff, 0xb07dff, 0xffffff],
+  ice: [0xdff6ff, 0xa8dcf5, 0xffffff, 0x8ac4e8],
+} as const
+
+function landmarkPalette(kind: LandmarkKind): readonly number[] {
+  if (kind === 'crystal') return landmarkDebrisColors.crystal
+  if (kind === 'ice-spire') return landmarkDebrisColors.ice
+  if (kind === 'windmill' || kind === 'tiki' || kind === 'silo-farm' || kind === 'pagoda') return woodDebris
+  if (kind === 'wind-turbine' || kind === 'ferris-wheel' || kind === 'observatory' || kind === 'water-tower' || kind === 'radar-dish') return metalDebris
+  if (kind === 'mushroom' || kind === 'sunflower' || kind === 'cactus' || kind === 'ancient-tree') return leafDebris
+  return rockDebris
+}
+
+// New landmarks grow in after a landscape change; old ones stay put.
+function rebuildLandmarks(centerX: number, centerZ: number, animate: boolean): void {
+  for (const actor of landmarkActors) landmarkGroup.remove(actor.model.group)
+  landmarkActors.length = 0
+  const now = performance.now()
+  const keys = new Set<string>()
+  for (const site of generateLandmarks(centerX, centerZ, landscape.kinds)) {
+    const key = `${site.kind}:${Math.round(site.x)}:${Math.round(site.z)}`
+    keys.add(key)
+    const model = createLandmarkModel(site.kind)
+    const fresh = animate && !knownLandmarkKeys.has(key)
+    model.group.position.set(site.x, site.y, site.z)
+    model.group.rotation.y = site.rotation
+    model.group.scale.setScalar(site.scale * (fresh ? 0.01 : 1))
+    landmarkGroup.add(model.group)
+    landmarkActors.push({ site, model, bornAt: fresh ? now : Number.NEGATIVE_INFINITY })
+    const info = LANDMARKS[site.kind]
+    destructibles.push({
+      x: site.x,
+      y: site.y + info.height * site.scale * 0.5,
+      z: site.z,
+      radius: info.radius * site.scale * 0.8,
+      size: info.radius * site.scale,
+      palette: landmarkPalette(site.kind),
+      destroyed: false,
+      scoreKey: 'landmark',
+      destroy: () => landmarkGroup.remove(model.group),
+    })
+  }
+  knownLandmarkKeys = keys
+}
+
+function updateLandmarks(now: number): void {
+  const time = now * 0.001
+  for (const actor of landmarkActors) {
+    const { site, model } = actor
+    if (Number.isFinite(actor.bornAt)) {
+      const progress = Math.min(1, (now - actor.bornAt) / 1500)
+      model.group.scale.setScalar(site.scale * Math.max(0.01, 1 - (1 - progress) ** 3))
+      if (progress >= 1) actor.bornAt = Number.NEGATIVE_INFINITY
+    }
+    for (const spinner of model.spinners) spinner.object.rotation[spinner.axis] = time * spinner.speed + site.x * 0.01
+    if (model.bobs) model.group.position.y = site.y + Math.sin(time * 0.8 + site.x * 0.01) * 10
+    model.pulses.forEach((pulse, index) => {
+      const phase = (time * 0.35 + index * 0.17 + site.x * 0.001) % 1
+      pulse.object.position.y = pulse.baseY + phase * 70
+      pulse.object.scale.setScalar(0.6 + phase * 1.6)
+    })
+  }
+}
 
 interface Destructible {
   x: number
@@ -1093,6 +1102,7 @@ interface Destructible {
   palette: readonly number[]
   destroyed: boolean
   object?: THREE.Object3D
+  scoreKey?: ScoreKey
   destroy: () => void
 }
 
@@ -1141,12 +1151,14 @@ function registerRock(rock: ReturnType<typeof generateRockField>[number], index:
 function updateForest(): void {
   const regionX = Math.round(flight.x / 6000)
   const regionZ = Math.round(flight.z / 6000)
-  if (regionX === forestRegionX && regionZ === forestRegionZ) return
+  if (regionX === forestRegionX && regionZ === forestRegionZ && landscape.version === forestVersion) return
+  const regionChanged = regionX !== forestRegionX || regionZ !== forestRegionZ
   forestRegionX = regionX
   forestRegionZ = regionZ
+  forestVersion = landscape.version
 
   rebuildObstacles(regionX * 6000, regionZ * 6000)
-  const trees = generateForest(regionX * 6000, regionZ * 6000, treeCapacity)
+  const trees = generateForest(regionX * 6000, regionZ * 6000, treeCapacity, landscape.treeDensity)
   destructibles.length = 0
   let pineCount = 0
   let broadleafCount = 0
@@ -1176,7 +1188,7 @@ function updateForest(): void {
       broadleafCount += 1
     }
   })
-  const rocks = generateRockField(regionX * 6000, regionZ * 6000, rockCapacity)
+  const rocks = generateRockField(regionX * 6000, regionZ * 6000, rockCapacity, landscape.rockDensity)
   rocks.forEach((rock, index) => {
     const normal = terrainNormalAt(rock.x, rock.z)
     const surfaceNormal = new THREE.Vector3(normal.x, normal.y, normal.z)
@@ -1197,7 +1209,7 @@ function updateForest(): void {
     registerRock(rock, index)
   })
   cannonField.clear()
-  for (const site of generateCannons(regionX * 6000, regionZ * 6000, 12)) {
+  for (const site of generateCannons(regionX * 6000, regionZ * 6000, 20, landscape.cannonDensity)) {
     const cannon = createCannon(site)
     cannonField.add(cannon)
     destructibles.push({
@@ -1212,22 +1224,7 @@ function updateForest(): void {
     })
   }
   townGroup.clear()
-  carActors.length = 0
   const town = generateSettlement(regionX * 6000, regionZ * 6000)
-  for (const street of town.roads) {
-    const road = new THREE.Mesh(roadGeometry, roadSurface)
-    road.position.set(street.x, street.height + 1, street.z)
-    road.rotation.y = street.rotation
-    road.scale.set(street.length, 1.4, street.width)
-    townGroup.add(road)
-
-    for (const dash of [-1, 0, 1]) {
-      const marking = new THREE.Mesh(roadGeometry, roadPaint)
-      marking.position.set(dash * 34, 0.8, 0)
-      marking.scale.set(15, 0.4, 1.2)
-      road.add(marking)
-    }
-  }
   for (const building of town.buildings) {
     const house = createTownBuilding(building)
     townGroup.add(house)
@@ -1242,22 +1239,7 @@ function updateForest(): void {
       destroy: () => townGroup.remove(house),
     })
   }
-  for (const car of town.cars) {
-    const group = createTownCar(car)
-    townGroup.add(group)
-    carActors.push({ group, site: car })
-    destructibles.push({
-      x: car.x,
-      y: car.height + 8,
-      z: car.z,
-      radius: 18,
-      size: 20,
-      palette: metalDebris,
-      destroyed: false,
-      object: group,
-      destroy: () => townGroup.remove(group),
-    })
-  }
+  rebuildLandmarks(regionX * 6000, regionZ * 6000, !regionChanged)
   forestTrunks.count = trees.length
   forestCrowns.count = pineCount
   forestBroadleaf.count = broadleafCount
@@ -2213,7 +2195,7 @@ function destroyDestructible(target: Destructible): void {
   target.destroyed = true
   explode(destructibleCenter(target), target.size, target.palette)
   target.destroy()
-  awardScore(target.palette === leafDebris ? 'tree' : target.palette === rockDebris ? 'rock' : target.palette === woodDebris ? 'house' : target.object ? 'car' : 'cannon', performance.now())
+  awardScore(target.scoreKey ?? (target.palette === leafDebris ? 'tree' : target.palette === rockDebris ? 'rock' : target.palette === woodDebris ? 'house' : 'cannon'), performance.now())
   targetsPopped += 1
   targetsPoppedReadout.textContent = String(targetsPopped)
 }
@@ -2243,6 +2225,7 @@ function updateProjectiles(now: number, delta: number): void {
     }
     if (!hit) hit = hitEnemy(projectileStart, end, now)
     if (!hit) hit = hitBoss(projectileStart, end, now)
+    if (!hit) hit = hitMine(projectileStart, end, now)
     if (!hit && asteroidsActive) {
       for (const asteroid of asteroidStates) {
         if (asteroid.popped) continue
@@ -2281,9 +2264,16 @@ const enemyBodyMaterial = new THREE.MeshStandardMaterial({ color: 0x4a2a2e, roug
 const enemyWingMaterial = new THREE.MeshStandardMaterial({ color: 0x8f2f2b, roughness: 0.6, flatShading: true })
 const enemyGlowMaterial = new THREE.MeshBasicMaterial({ color: 0xff4a2a, toneMapped: false })
 const enemyBulletGeometry = new THREE.SphereGeometry(2.5, 8, 6)
-const enemyBulletMaterial = new THREE.MeshBasicMaterial({ color: 0xff5a3c, toneMapped: false })
-const ENEMY_BULLET_SPEED = 240
+const enemyBulletColors: Record<EnemyKind, number> = { drone: 0xff5a3c, interceptor: 0x66e6ff, weaver: 0xff8ae8, sniper: 0xffffff, spinner: 0xd070ff, minelayer: 0xffb13a, kamikaze: 0xff3b2f, gunship: 0xffb13a }
+const enemyBulletMaterials = Object.fromEntries(Object.entries(enemyBulletColors).map(([kind, color]) => [kind, new THREE.MeshBasicMaterial({ color, toneMapped: false })])) as Record<EnemyKind, THREE.MeshBasicMaterial>
+const enemyLaserMaterial = new THREE.LineBasicMaterial({ color: 0xff3b3b, transparent: true, opacity: 0.75 })
+const enemyMineGeometry = new THREE.IcosahedronGeometry(7, 0)
+const enemyMineMaterial = new THREE.MeshStandardMaterial({ color: 0x3a3f44, roughness: 0.5, metalness: 0.5, flatShading: true })
+const enemyMineLightMaterial = new THREE.MeshBasicMaterial({ color: 0xff3b2f, toneMapped: false })
+const enemyMineLightGeometry = new THREE.SphereGeometry(2.6, 8, 6)
 const ENEMY_BULLET_LIFETIME = 3600
+const ENEMY_MINE_LIFETIME = 16000
+const ENEMY_MINE_CAP = 10
 
 interface EnemyActor {
   enemy: Enemy
@@ -2291,6 +2281,7 @@ interface EnemyActor {
   alive: boolean
   respawnAt: number
   previousHeading: number
+  laser?: THREE.Line
 }
 
 interface EnemyBullet {
@@ -2298,10 +2289,12 @@ interface EnemyBullet {
   velocity: THREE.Vector3
   spawnedAt: number
   life?: number
+  radius?: number
 }
 
 const enemyActors: EnemyActor[] = []
 const enemyBullets: EnemyBullet[] = []
+const enemyMines: Array<{ mesh: THREE.Mesh; spawnedAt: number }> = []
 const enemyAim = new THREE.Vector3()
 
 const enemyPalettes: Record<EnemyKind, { body: THREE.MeshStandardMaterial; wing: THREE.MeshStandardMaterial; glow: THREE.MeshBasicMaterial }> = {
@@ -2316,13 +2309,43 @@ const enemyPalettes: Record<EnemyKind, { body: THREE.MeshStandardMaterial; wing:
     wing: new THREE.MeshStandardMaterial({ color: 0x7a6a38, roughness: 0.7, flatShading: true }),
     glow: new THREE.MeshBasicMaterial({ color: 0xffb13a, toneMapped: false }),
   },
+  weaver: {
+    body: new THREE.MeshStandardMaterial({ color: 0x4a2d5a, roughness: 0.5, metalness: 0.3, flatShading: true }),
+    wing: new THREE.MeshStandardMaterial({ color: 0xd96ad0, roughness: 0.6, flatShading: true }),
+    glow: new THREE.MeshBasicMaterial({ color: 0xffd0ff, toneMapped: false }),
+  },
+  sniper: {
+    body: new THREE.MeshStandardMaterial({ color: 0x2b2f33, roughness: 0.4, metalness: 0.5, flatShading: true }),
+    wing: new THREE.MeshStandardMaterial({ color: 0x66737a, roughness: 0.5, flatShading: true }),
+    glow: new THREE.MeshBasicMaterial({ color: 0xff2a2a, toneMapped: false }),
+  },
+  spinner: {
+    body: new THREE.MeshStandardMaterial({ color: 0x3a2350, roughness: 0.5, metalness: 0.4, flatShading: true }),
+    wing: new THREE.MeshStandardMaterial({ color: 0xb04ad8, roughness: 0.6, flatShading: true }),
+    glow: new THREE.MeshBasicMaterial({ color: 0xff7ae0, toneMapped: false }),
+  },
+  minelayer: {
+    body: new THREE.MeshStandardMaterial({ color: 0x4a4a2e, roughness: 0.7, metalness: 0.2, flatShading: true }),
+    wing: new THREE.MeshStandardMaterial({ color: 0x8a8a3a, roughness: 0.7, flatShading: true }),
+    glow: new THREE.MeshBasicMaterial({ color: 0xff9a2a, toneMapped: false }),
+  },
+  kamikaze: {
+    body: new THREE.MeshStandardMaterial({ color: 0x6a1414, roughness: 0.5, metalness: 0.3, flatShading: true }),
+    wing: new THREE.MeshStandardMaterial({ color: 0xd63a2a, roughness: 0.6, flatShading: true }),
+    glow: new THREE.MeshBasicMaterial({ color: 0xff2200, toneMapped: false }),
+  },
 }
 const enemyShapes: Record<EnemyKind, { body: [number, number, number]; wing: [number, number, number]; fins: number; glows: number[]; glowSize: number }> = {
   drone: { body: [5, 3.4, 16], wing: [1, 1, 1], fins: 22, glows: [0], glowSize: 1 },
   interceptor: { body: [2.6, 2, 18], wing: [0.5, 1, 0.8], fins: 11, glows: [0], glowSize: 0.8 },
   gunship: { body: [9, 6, 24], wing: [1.5, 1.4, 1.6], fins: 33, glows: [-14, 14], glowSize: 1.8 },
+  weaver: { body: [3, 2.4, 14], wing: [1.4, 1, 1.5], fins: 30, glows: [0], glowSize: 0.9 },
+  sniper: { body: [2, 2, 30], wing: [0.3, 1, 0.4], fins: 7, glows: [0], glowSize: 0.8 },
+  spinner: { body: [11, 4, 11], wing: [0.7, 1, 3.6], fins: 16, glows: [0], glowSize: 1.4 },
+  minelayer: { body: [8, 7, 20], wing: [0.8, 1, 1.1], fins: 18, glows: [-7, 7], glowSize: 1.3 },
+  kamikaze: { body: [6, 6, 12], wing: [0.4, 1, 0.5], fins: 8, glows: [0], glowSize: 2.4 },
 }
-const enemyExplosionSize: Record<EnemyKind, number> = { drone: 50, interceptor: 34, gunship: 95 }
+const enemyExplosionSize: Record<EnemyKind, number> = { drone: 50, interceptor: 34, gunship: 95, weaver: 42, sniper: 40, spinner: 70, minelayer: 70, kamikaze: 60 }
 
 function createEnemyModel(kind: EnemyKind): THREE.Group {
   const palette = enemyPalettes[kind]
@@ -2353,20 +2376,13 @@ function createEnemyModel(kind: EnemyKind): THREE.Group {
   return group
 }
 
-function pickEnemyKind(): EnemyKind {
-  const roll = random()
-  if (targetsPopped >= 12 && roll < 0.25) return 'gunship'
-  if (targetsPopped >= 4 && roll < 0.55) return 'interceptor'
-  return 'drone'
-}
-
-function spawnEnemy(actor: EnemyActor): void {
+function spawnEnemy(actor: EnemyActor, alive: Partial<Record<EnemyKind, number>>): void {
   const bearing = flight.heading + (random() - 0.5) * 0.9
   const radius = 1500 + random() * 600
   const x = flight.x - Math.sin(bearing) * radius
   const z = flight.z - Math.cos(bearing) * radius
   const y = Math.max(flight.y + (random() - 0.5) * 200, terrainHeight(x, z) + 200)
-  const kind = pickEnemyKind()
+  const kind = pickEnemyKind(targetsPopped, alive, random)
   scene.remove(actor.group)
   actor.group = createEnemyModel(kind)
   scene.add(actor.group)
@@ -2375,12 +2391,14 @@ function spawnEnemy(actor: EnemyActor): void {
   actor.previousHeading = actor.enemy.heading
   actor.alive = true
   actor.group.visible = true
+  alive[kind] = (alive[kind] ?? 0) + 1
 }
 
 function popEnemy(actor: EnemyActor, now: number): void {
   actor.alive = false
   actor.respawnAt = now + 6000
   actor.group.visible = false
+  if (actor.laser) actor.laser.visible = false
   explode(actor.group.position, enemyExplosionSize[actor.enemy.kind], fireDebris)
   targetsPopped += 1
   targetsPoppedReadout.textContent = String(targetsPopped)
@@ -2393,55 +2411,151 @@ function hitEnemy(start: THREE.Vector3, end: THREE.Vector3, now: number): boolea
     if (!segmentHitsSphere(start.x, start.y, start.z, end.x, end.y, end.z, center.x, center.y, center.z, ENEMY_STATS[actor.enemy.kind].hitRadius)) continue
     actor.enemy.health -= 1
     if (actor.enemy.health <= 0) {
+      const kind = actor.enemy.kind
       popEnemy(actor, now)
-      awardScore(actor.enemy.kind, now)
-    }
-    else explode(center, 14, fireDebris)
+      awardScore(kind, now)
+    } else explode(center, 14, fireDebris)
     return true
   }
   return false
 }
 
-function fireEnemyBullet(actor: EnemyActor, now: number, spread = 0): void {
-  const mesh = new THREE.Mesh(enemyBulletGeometry, enemyBulletMaterial)
+function pushEnemyBullet(kind: EnemyKind, origin: THREE.Vector3, direction: THREE.Vector3, speed: number, size: number, now: number, life?: number, radius?: number): void {
+  const mesh = new THREE.Mesh(enemyBulletGeometry, enemyBulletMaterials[kind])
+  mesh.scale.setScalar(size / 2.5)
+  mesh.position.copy(origin)
+  scene.add(mesh)
+  enemyBullets.push({ mesh, velocity: direction.clone().multiplyScalar(speed), spawnedAt: now, life, radius })
+}
+
+function fireEnemyBullet(actor: EnemyActor, now: number, spread = 0, jitter = 0.06): void {
+  const stats = ENEMY_STATS[actor.enemy.kind]
   audio.enemyShot()
   enemyAim.set(flight.x - actor.enemy.x, flight.y - actor.enemy.y, flight.z - actor.enemy.z).normalize()
-  enemyAim.x += (Math.random() - 0.5) * 0.06
-  enemyAim.y += (Math.random() - 0.5) * 0.06
-  enemyAim.z += (Math.random() - 0.5) * 0.06
+  enemyAim.x += (Math.random() - 0.5) * jitter
+  enemyAim.y += (Math.random() - 0.5) * jitter
+  enemyAim.z += (Math.random() - 0.5) * jitter
   enemyAim.x -= enemyAim.z * spread
   enemyAim.z += enemyAim.x * spread
   enemyAim.normalize()
-  mesh.position.set(actor.enemy.x, actor.enemy.y, actor.enemy.z).addScaledVector(enemyAim, 30)
+  bossStart.set(actor.enemy.x, actor.enemy.y, actor.enemy.z).addScaledVector(enemyAim, 30)
+  pushEnemyBullet(actor.enemy.kind, bossStart, enemyAim, stats.bulletSpeed, stats.bulletSize, now, stats.pattern === 'snipe' ? 4200 : undefined)
+}
+
+function fireEnemyRing(actor: EnemyActor, now: number): void {
+  const stats = ENEMY_STATS[actor.enemy.kind]
+  audio.enemyShot()
+  const tilt = THREE.MathUtils.clamp((flight.y - actor.enemy.y) / 900, -0.5, 0.5)
+  for (let shot = 0; shot < stats.burst; shot += 1) {
+    const angle = (shot / stats.burst) * Math.PI * 2 + actor.enemy.phase
+    enemyAim.set(Math.cos(angle), tilt, Math.sin(angle)).normalize()
+    bossStart.set(actor.enemy.x, actor.enemy.y, actor.enemy.z).addScaledVector(enemyAim, 40)
+    pushEnemyBullet(actor.enemy.kind, bossStart, enemyAim, stats.bulletSpeed, stats.bulletSize, now, 6500)
+  }
+}
+
+function dropMine(actor: EnemyActor, now: number): void {
+  if (enemyMines.length >= ENEMY_MINE_CAP) {
+    const oldest = enemyMines.shift()!
+    scene.remove(oldest.mesh)
+  }
+  const mesh = new THREE.Mesh(enemyMineGeometry, enemyMineMaterial)
+  mesh.add(new THREE.Mesh(enemyMineLightGeometry, enemyMineLightMaterial))
+  mesh.position.set(actor.enemy.x, actor.enemy.y - 14, actor.enemy.z)
   scene.add(mesh)
-  enemyBullets.push({ mesh, velocity: enemyAim.clone().multiplyScalar(ENEMY_BULLET_SPEED), spawnedAt: now })
+  enemyMines.push({ mesh, spawnedAt: now })
+}
+
+function fireEnemy(actor: EnemyActor, now: number): void {
+  const stats = ENEMY_STATS[actor.enemy.kind]
+  if (stats.pattern === 'mine') dropMine(actor, now)
+  else if (stats.pattern === 'ring') fireEnemyRing(actor, now)
+  else if (stats.pattern === 'snipe') fireEnemyBullet(actor, now, 0, 0.005)
+  else for (let shot = 0; shot < stats.burst; shot += 1) fireEnemyBullet(actor, now, (shot - (stats.burst - 1) / 2) * (stats.burst > 2 ? 0.1 : 0.07))
+}
+
+function removeEnemyMine(index: number): void {
+  scene.remove(enemyMines[index].mesh)
+  enemyMines.splice(index, 1)
+}
+
+function updateEnemyMines(now: number): void {
+  enemyMineLightMaterial.color.setRGB(1, 0.2, 0.15).multiplyScalar(Math.sin(now * 0.012) > 0 ? 1 : 0.2)
+  for (let index = enemyMines.length - 1; index >= 0; index -= 1) {
+    const mine = enemyMines[index]
+    mine.mesh.rotation.y += 0.01
+    if (now - mine.spawnedAt > ENEMY_MINE_LIFETIME) {
+      removeEnemyMine(index)
+      continue
+    }
+    if (mine.mesh.position.distanceToSquared(hitCenter.set(flight.x, flight.y, flight.z)) < 55 * 55) {
+      explode(mine.mesh.position, 40, fireDebris)
+      removeEnemyMine(index)
+      damagePlayer(now, 'hit-by-shot')
+    }
+  }
+}
+
+function hitMine(start: THREE.Vector3, end: THREE.Vector3, now: number): boolean {
+  for (let index = enemyMines.length - 1; index >= 0; index -= 1) {
+    const center = enemyMines[index].mesh.position
+    if (!segmentHitsSphere(start.x, start.y, start.z, end.x, end.y, end.z, center.x, center.y, center.z, 14)) continue
+    explode(center, 26, fireDebris)
+    removeEnemyMine(index)
+    awardScore('mine', now)
+    return true
+  }
+  return false
 }
 
 function updateEnemies(now: number, delta: number): void {
-  const wanted = Math.min(5, 2 + Math.floor(targetsPopped / 10))
+  const wanted = maxConcurrentEnemies(targetsPopped)
   while (enemyActors.length < wanted) {
     const group = createEnemyModel('drone')
     group.visible = false
     scene.add(group)
     enemyActors.push({ enemy: createEnemy(0, 0, 0), group, alive: false, respawnAt: now + 3000, previousHeading: 0 })
   }
+  const alive: Partial<Record<EnemyKind, number>> = {}
+  let aliveCount = 0
+  for (const actor of enemyActors) {
+    if (!actor.alive) continue
+    aliveCount += 1
+    alive[actor.enemy.kind] = (alive[actor.enemy.kind] ?? 0) + 1
+  }
   for (const actor of enemyActors) {
     if (!actor.alive) {
-      if (now >= actor.respawnAt && !bossBusy() && !activeWorldEvent?.peace) spawnEnemy(actor)
+      if (now >= actor.respawnAt && aliveCount < wanted && !bossBusy() && !activeWorldEvent?.peace) {
+        spawnEnemy(actor, alive)
+        aliveCount += 1
+      }
       continue
     }
     if (Math.hypot(actor.enemy.x - flight.x, actor.enemy.z - flight.z) > 6500) {
-      spawnEnemy(actor)
+      alive[actor.enemy.kind] = Math.max(0, (alive[actor.enemy.kind] ?? 1) - 1)
+      spawnEnemy(actor, alive)
       continue
     }
-    if (stepEnemy(actor.enemy, flight, delta)) {
-      const burst = ENEMY_STATS[actor.enemy.kind].burst
-      for (let shot = 0; shot < burst; shot += 1) fireEnemyBullet(actor, now, (shot - (burst - 1) / 2) * 0.1)
-    }
+    if (stepEnemy(actor.enemy, flight, delta)) fireEnemy(actor, now)
     const turn = delta > 0 ? (actor.enemy.heading - actor.previousHeading) / delta : 0
     actor.previousHeading = actor.enemy.heading
     actor.group.position.set(actor.enemy.x, actor.enemy.y, actor.enemy.z)
     actor.group.rotation.set(0, actor.enemy.heading, THREE.MathUtils.clamp(turn * 0.6, -0.6, 0.6))
+    actor.group.scale.setScalar(actor.enemy.kind === 'kamikaze' ? 1 + Math.sin(now * 0.02) * 0.12 : 1)
+    if (actor.enemy.kind === 'sniper') {
+      if (!actor.laser) {
+        actor.laser = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]), enemyLaserMaterial)
+        actor.laser.frustumCulled = false
+        scene.add(actor.laser)
+      }
+      actor.laser.visible = actor.enemy.charge > 0
+      if (actor.laser.visible) {
+        const points = actor.laser.geometry.attributes.position
+        points.setXYZ(0, actor.enemy.x, actor.enemy.y, actor.enemy.z)
+        points.setXYZ(1, flight.x, flight.y, flight.z)
+        points.needsUpdate = true
+      }
+    } else if (actor.laser) actor.laser.visible = false
   }
 }
 
@@ -2451,7 +2565,7 @@ function updateEnemyBullets(now: number, delta: number): void {
     projectileStart.copy(bullet.mesh.position)
     bullet.mesh.position.addScaledVector(bullet.velocity, delta)
     const end = bullet.mesh.position
-    const struck = segmentHitsSphere(projectileStart.x, projectileStart.y, projectileStart.z, end.x, end.y, end.z, flight.x, flight.y, flight.z, 16)
+    const struck = segmentHitsSphere(projectileStart.x, projectileStart.y, projectileStart.z, end.x, end.y, end.z, flight.x, flight.y, flight.z, bullet.radius ?? 16)
     if (struck) damagePlayer(now, 'hit-by-shot')
     if (struck || now - bullet.spawnedAt > (bullet.life ?? ENEMY_BULLET_LIFETIME)) {
       scene.remove(bullet.mesh)
@@ -2468,12 +2582,20 @@ const bossBulletMaterials: Record<BossKind, THREE.MeshBasicMaterial> = {
   dragon: new THREE.MeshBasicMaterial({ color: 0xff7a2a, toneMapped: false }),
   mothership: new THREE.MeshBasicMaterial({ color: 0xff4fd8, toneMapped: false }),
   manta: new THREE.MeshBasicMaterial({ color: 0x6de8ff, toneMapped: false }),
+  phoenix: new THREE.MeshBasicMaterial({ color: 0xffa03a, toneMapped: false }),
+  colossus: new THREE.MeshBasicMaterial({ color: 0xd8c8a0, toneMapped: false }),
+  hydra: new THREE.MeshBasicMaterial({ color: 0x7aff6a, toneMapped: false }),
+  eye: new THREE.MeshBasicMaterial({ color: 0xc27aff, toneMapped: false }),
 }
-const bossBulletSize: Record<BossKind, number> = { dragon: 7, mothership: 5, manta: 6 }
+const bossBulletSize: Record<BossKind, number> = { dragon: 7, mothership: 5, manta: 6, phoenix: 6, colossus: 6, hydra: 5, eye: 5 }
 const bossWarnings: Record<BossKind, string> = {
   dragon: 'WARNING: A DRAGON HAS HEARD ABOUT YOUR RINGS',
   mothership: 'WARNING: A MOTHERSHIP IS PARKING OVERHEAD',
   manta: 'WARNING: A THUNDER MANTA IS COMING IN HOT',
+  phoenix: 'WARNING: A PHOENIX IS HAVING A VERY BIG DAY',
+  colossus: 'WARNING: A STONE HEAD WOKE UP GRUMPY',
+  hydra: 'WARNING: THREE HEADS, ONE OPINION: YOU',
+  eye: 'WARNING: SOMETHING HUGE IS WATCHING YOU',
 }
 const BOSS_BULLET_LIFE = 7000
 
@@ -2489,6 +2611,7 @@ const bossBlasts: Array<{ at: number; x: number; y: number; z: number; size: num
 const bossAim = new THREE.Vector3()
 const bossSide = new THREE.Vector3()
 const bossStart = new THREE.Vector3()
+const bossUp = new THREE.Vector3()
 
 function bossBusy(): boolean {
   return boss !== null || Number.isFinite(bossSpawnAt) || bossBlasts.length > 0
@@ -2500,7 +2623,7 @@ function bossMesh(geometry: THREE.BufferGeometry, material: THREE.Material, x = 
   return mesh
 }
 
-function createBossModel(kind: BossKind): THREE.Group {
+function createBossModel(kind: BossKind, tier: number): THREE.Group {
   bossWings.length = 0
   bossSegments.length = 0
   bossSpinners.length = 0
@@ -2582,7 +2705,7 @@ function createBossModel(kind: BossKind): THREE.Group {
       cannon.rotation.x = Math.PI
       group.add(cannon)
     }
-  } else {
+  } else if (kind === 'manta') {
     const hide = solid(0x24425a, 0.25)
     const body = bossMesh(sphere, hide)
     body.scale.set(60, 13, 96)
@@ -2610,11 +2733,140 @@ function createBossModel(kind: BossKind): THREE.Group {
       group.add(ring)
       bossSpinners.push(ring)
     }
+  } else if (kind === 'phoenix') {
+    const plumage = solid(0xc8431f)
+    const gold = solid(0xffb13a)
+    const flame = glow(0xffd27a)
+    const body = bossMesh(sphere, plumage)
+    body.scale.set(22, 18, 52)
+    group.add(body)
+    const head = bossMesh(sphere, plumage, 0, 8, -52)
+    head.scale.set(14, 14, 18)
+    group.add(head)
+    const beak = bossMesh(new THREE.ConeGeometry(5, 22, 6), gold, 0, 6, -74)
+    beak.rotation.x = -Math.PI / 2
+    group.add(beak)
+    for (const side of [-1, 1]) {
+      put(group, bossMesh(sphere, flame, side * 7, 12, -64)).scale.setScalar(3.4)
+      const wing = new THREE.Group()
+      wing.position.set(side * 14, 6, -6)
+      const membrane = bossMesh(box, solid(0xe06a2a), side * 78, 0, 8)
+      membrane.scale.set(156, 2.5, 78)
+      wing.add(membrane)
+      for (const tip of [-30, 0, 30]) {
+        const feather = bossMesh(box, gold, side * (150 + (tip === 0 ? 24 : 6)), 1, tip + 8)
+        feather.scale.set(40, 2.5, 12)
+        wing.add(feather)
+      }
+      group.add(wing)
+      bossWings.push(wing)
+    }
+    for (let feather = 0; feather < 5; feather += 1) {
+      const plume = bossMesh(box, feather % 2 ? gold : solid(0xe06a2a), (feather - 2) * 14, 4, 110 + Math.abs(feather - 2) * -6)
+      plume.scale.set(6, 2, 100)
+      plume.rotation.y = (feather - 2) * 0.12
+      group.add(plume)
+    }
+    const embers = new THREE.Group()
+    for (let index = 0; index < 8; index += 1) {
+      const angle = (index / 8) * Math.PI * 2
+      put(embers, bossMesh(sphere, flame, Math.cos(angle) * 120, Math.sin(angle * 2) * 12, Math.sin(angle) * 120)).scale.setScalar(7)
+    }
+    group.add(embers)
+    bossSpinners.push(embers)
+  } else if (kind === 'colossus') {
+    const stone = solid(0x8a857a)
+    const dark = solid(0x4a463e)
+    const head = bossMesh(sphere, stone)
+    head.scale.set(84, 104, 84)
+    group.add(head)
+    put(group, bossMesh(box, dark, 0, 42, -66)).scale.set(120, 14, 30)
+    put(group, bossMesh(box, dark, 0, -44, -72)).scale.set(52, 12, 18)
+    for (const side of [-1, 1]) put(group, bossMesh(sphere, glow(0xffb13a), side * 30, 18, -74)).scale.setScalar(11)
+    put(group, bossMesh(box, stone, 0, -8, -84)).scale.set(16, 38, 22)
+    for (let spike = 0; spike < 5; spike += 1) {
+      const crown = bossMesh(new THREE.ConeGeometry(11, 46, 5), dark, (spike - 2) * 30, 118 - Math.abs(spike - 2) * 8, 0)
+      group.add(crown)
+    }
+    const boulders = new THREE.Group()
+    for (let index = 0; index < 6; index += 1) {
+      const angle = (index / 6) * Math.PI * 2
+      put(boulders, bossMesh(new THREE.IcosahedronGeometry(1, 0), index % 2 ? stone : dark, Math.cos(angle) * 190, Math.sin(angle * 3) * 24, Math.sin(angle) * 190)).scale.setScalar(26)
+    }
+    group.add(boulders)
+    bossSpinners.push(boulders)
+  } else if (kind === 'hydra') {
+    const scales = solid(0x3f7a3a)
+    const belly = solid(0xc9d28a)
+    const body = bossMesh(sphere, scales)
+    body.scale.set(64, 44, 100)
+    group.add(body)
+    for (const [lane, side] of [-1, 0, 1].entries()) {
+      const neck = new THREE.Group()
+      neck.position.set(side * 34, 20, -64)
+      for (let link = 0; link < 6; link += 1) {
+        put(neck, bossMesh(sphere, scales, side * link * 10, link * 16, -link * 26)).scale.setScalar(15 - link)
+      }
+      const head = bossMesh(sphere, scales, side * 62, 100, -158)
+      head.scale.set(16, 12, 22)
+      neck.add(head)
+      put(neck, bossMesh(sphere, glow(0xffe03a), side * 62 - 6, 104, -176)).scale.setScalar(3)
+      put(neck, bossMesh(sphere, glow(0xffe03a), side * 62 + 6, 104, -176)).scale.setScalar(3)
+      for (const horn of [-1, 1]) {
+        const spike = bossMesh(new THREE.ConeGeometry(3, 18, 5), belly, side * 62 + horn * 8, 116, -150)
+        spike.rotation.x = -0.5
+        neck.add(spike)
+      }
+      group.add(neck)
+      bossSegments.push(neck)
+      void lane
+    }
+    const tail = bossMesh(new THREE.ConeGeometry(30, 160, 8), scales, 0, -4, 150)
+    tail.rotation.x = Math.PI / 2
+    group.add(tail)
+    for (const side of [-1, 1]) {
+      const wing = new THREE.Group()
+      wing.position.set(side * 40, 24, 20)
+      const membrane = bossMesh(box, solid(0x2b5a2a), side * 60, 0, 0)
+      membrane.scale.set(120, 2.5, 80)
+      wing.add(membrane)
+      group.add(wing)
+      bossWings.push(wing)
+    }
+  } else {
+    const white = solid(0xf2efe6, 0.05)
+    const eyeball = bossMesh(sphere, white)
+    eyeball.scale.setScalar(112)
+    group.add(eyeball)
+    put(group, bossMesh(sphere, glow(0x7a5cff), 0, 0, -102)).scale.set(62, 62, 14)
+    put(group, bossMesh(sphere, glow(0x1a0a30), 0, 0, -112)).scale.set(28, 28, 10)
+    put(group, bossMesh(sphere, glow(0xffffff), -14, 12, -120)).scale.set(6, 6, 3)
+    for (const [index, radius] of [150, 190, 230].entries()) {
+      const ring = bossMesh(new THREE.TorusGeometry(radius, 2.6, 6, 48), glow(index % 2 ? 0xff4fd8 : 0x7a5cff))
+      ring.rotation.x = Math.PI / 2 + index * 0.45
+      group.add(ring)
+      bossSpinners.push(ring)
+    }
+    for (let tentacle = 0; tentacle < 7; tentacle += 1) {
+      const arm = new THREE.Group()
+      arm.position.set(Math.cos((tentacle / 7) * Math.PI * 2) * 54, Math.sin((tentacle / 7) * Math.PI * 2) * 54, 80)
+      const strand = bossMesh(new THREE.ConeGeometry(9, 150, 6), solid(0x5a3a8a), 0, 0, 70)
+      strand.rotation.x = -Math.PI / 2
+      arm.add(strand)
+      group.add(arm)
+      bossSegments.push(arm)
+    }
+  }
+  if (tier > 0) {
+    group.traverse((part) => {
+      if (part instanceof THREE.Mesh && (part.material instanceof THREE.MeshStandardMaterial || part.material instanceof THREE.MeshBasicMaterial)) part.material.color.offsetHSL(tier * 0.17, 0, 0)
+    })
   }
   return group
 }
 
 function scheduleBoss(now: number): void {
+
   bossSpawnAt = now + 6500
   bossWarningUntil = now + 5500
   const kind = createBoss(bossesDefeated, 0, 0, 0).kind
@@ -2629,7 +2881,7 @@ function spawnBoss(): void {
   const z = flight.z - Math.cos(bearing) * 1700
   boss = createBoss(bossesDefeated, x, Math.max(flight.y + 150, terrainHeight(x, z) + 320), z)
   boss.angle = Math.atan2(z - flight.z, x - flight.x)
-  bossGroup = createBossModel(boss.kind)
+  bossGroup = createBossModel(boss.kind, boss.tier)
   scene.add(bossGroup)
   bossSpawnAt = Number.POSITIVE_INFINITY
   bossNameReadout.textContent = BOSS_STATS[boss.kind].name
@@ -2645,19 +2897,36 @@ function clearBoss(): void {
   bossBar.classList.remove('is-visible', 'is-warning')
 }
 
-function fireBossAttack(attack: { count: number; spread: number; speed: number }, now: number): void {
+function fireBossAttack(attack: BossAttack, now: number): void {
   if (!boss) return
+  const stats = BOSS_STATS[boss.kind]
   bossAim.set(flight.x - boss.x, flight.y - boss.y, flight.z - boss.z).normalize()
   bossSide.set(-bossAim.z, 0, bossAim.x).normalize()
+  bossUp.crossVectors(bossSide, bossAim).normalize()
   audio.enemyShot()
+  const size = bossBulletSize[boss.kind] * attack.size
   for (let shot = 0; shot < attack.count; shot += 1) {
-    const offset = (shot - (attack.count - 1) / 2) * attack.spread
-    const velocity = bossAim.clone().addScaledVector(bossSide, offset).normalize()
+    const direction = bossAim.clone()
+    const origin = bossStart.set(boss.x, boss.y, boss.z)
+    if (attack.pattern === 'fan' || attack.pattern === 'rocks') {
+      direction.addScaledVector(bossSide, (shot - (attack.count - 1) / 2) * attack.spread)
+    } else if (attack.pattern === 'ring') {
+      const angle = (shot / attack.count) * Math.PI * 2 + attack.angle
+      direction.set(Math.cos(angle), THREE.MathUtils.clamp((flight.y - boss.y) / 1200, -0.4, 0.4), Math.sin(angle))
+    } else if (attack.pattern === 'stream') {
+      const lane = attack.lane - 1
+      direction.addScaledVector(bossSide, lane * 0.07 + (Math.random() - 0.5) * attack.spread)
+      origin.addScaledVector(bossSide, lane * stats.hitRadius * (boss.kind === 'hydra' ? 0.6 : 0.2))
+    } else {
+      direction.addScaledVector(bossSide, Math.cos(attack.angle) * 0.16).addScaledVector(bossUp, Math.sin(attack.angle) * 0.16)
+    }
+    direction.normalize()
+    origin.addScaledVector(direction, stats.hitRadius * 0.7)
     const mesh = new THREE.Mesh(bossBulletGeometry, bossBulletMaterials[boss.kind])
-    mesh.scale.setScalar(bossBulletSize[boss.kind])
-    mesh.position.set(boss.x, boss.y, boss.z).addScaledVector(velocity, BOSS_STATS[boss.kind].hitRadius * 0.7)
+    mesh.scale.setScalar(size)
+    mesh.position.copy(origin)
     scene.add(mesh)
-    enemyBullets.push({ mesh, velocity: velocity.multiplyScalar(attack.speed), spawnedAt: now, life: BOSS_BULLET_LIFE })
+    enemyBullets.push({ mesh, velocity: direction.multiplyScalar(attack.speed), spawnedAt: now, life: attack.pattern === 'ring' ? 9000 : BOSS_BULLET_LIFE, radius: Math.max(16, size * 1.3) })
   }
 }
 
@@ -2705,16 +2974,20 @@ function updateBoss(now: number, delta: number): void {
 
   const time = now * 0.001
   bossWings.forEach((wing, index) => {
-    wing.rotation.z = Math.sin(time * (boss!.kind === 'dragon' ? 3.2 : 1.6)) * 0.42 * (index === 0 ? -1 : 1)
+    wing.rotation.z = Math.sin(time * (boss!.kind === 'dragon' ? 3.2 : boss!.kind === 'phoenix' ? 2.8 : 1.6)) * 0.42 * (index === 0 ? -1 : 1)
   })
   bossSegments.forEach((segment, index) => {
-    segment.position.x = Math.sin(time * 2.4 - index * 0.6) * 14
+    if (boss!.kind === 'hydra') segment.rotation.y = Math.sin(time * 1.6 + index * 2.1) * 0.35
+    else if (boss!.kind === 'eye') segment.rotation.z = Math.sin(time * 1.8 + index) * 0.4
+    else segment.position.x = Math.sin(time * 2.4 - index * 0.6) * 14
   })
-  for (const spinner of bossSpinners) {
-    if (boss.kind === 'mothership') spinner.rotation.y = time * 0.8
-    else if (boss.kind === 'manta') spinner.rotation.z = time * 2
+  bossSpinners.forEach((spinner, index) => {
+    if (boss!.kind === 'mothership' || boss!.kind === 'colossus') spinner.rotation.y = time * 0.8
+    else if (boss!.kind === 'phoenix') spinner.rotation.y = time * 1.6
+    else if (boss!.kind === 'manta') spinner.rotation.z = time * 2
+    else if (boss!.kind === 'eye') spinner.rotation.z = time * (1 + index * 0.4)
     else spinner.scale.setScalar(8 + Math.sin(time * 6) * 2)
-  }
+  })
 }
 
 function checkBossCollision(now: number): void {
@@ -2952,8 +3225,10 @@ function resetFlight(): void {
   damageCooldownUntil = 0
   for (const projectile of activeProjectiles.splice(0)) scene.remove(projectile.mesh)
   for (const bullet of enemyBullets.splice(0)) scene.remove(bullet.mesh)
+  for (const mine of enemyMines.splice(0)) scene.remove(mine.mesh)
   clearBoss()
   clearPowerUps()
+  Object.assign(landscape, createLandscape(), { version: landscape.version + 1 })
   for (const actor of enemyActors) {
     actor.alive = false
     actor.group.visible = false
@@ -3085,13 +3360,13 @@ function render(now: number): void {
   terrain.position.set(terrainOriginX, 0, terrainOriginZ)
   ;(terrainMaterial.uniforms.uOffset.value as THREE.Vector2).set(terrainOriginX, terrainOriginZ)
   updateForest()
-  if (!paused) updateTownCars(now)
   if (!paused) {
     if (touchFire || pressedKeys.has('KeyF')) fireProjectile(now)
     updateProjectiles(now, delta)
     updateAsteroids(now, delta)
     updateEnemies(now, delta * enemyTimeScale(powerEffects, now))
     updateEnemyBullets(now, delta * enemyTimeScale(powerEffects, now))
+    updateEnemyMines(now)
     updateBoss(now, delta * enemyTimeScale(powerEffects, now))
     updatePowerUps(now, delta)
   }
@@ -3131,6 +3406,7 @@ function render(now: number): void {
   updateEventWeather(delta)
   updateReadouts()
   updateObstacles(now)
+  updateLandmarks(now)
   renderer.render(scene, camera)
   requestAnimationFrame(render)
 }

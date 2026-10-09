@@ -48,7 +48,7 @@ export interface PersuasionLook {
 export const DEFAULT_RING_COLOR = 0xffd28a
 
 // Seconds of being ignored needed to reach each escalation step.
-const thresholds = [7, 14, 21, 29, 37, 46, 55, 65, 75, 86, 98, 111, 125, 140]
+const thresholds = [15, 30, 45, 60, 75, 90, 105, 120, 135, 150, 165, 180, 195, 210]
 
 // How many times each effect may fire during one objective.
 const limits: Record<PersuasionEffect, number> = {

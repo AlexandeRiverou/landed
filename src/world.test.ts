@@ -107,15 +107,11 @@ describe('terrainHeight', () => {
     assert.ok(cannons.every((cannon) => cannon.height >= 780 && waterCoverage(cannon.x, cannon.z) <= 0.05))
   })
 
-  it('generates repeatable road, building, and car layouts on dry lowlands', () => {
+  it('generates repeatable building layouts on dry lowlands', () => {
     const settlement = generateSettlement(0, 0)
     assert.deepEqual(settlement, generateSettlement(0, 0))
-    assert.ok(settlement.roads.length > 12)
     assert.ok(settlement.buildings.length > 8)
-    assert.ok(settlement.cars.length > 2)
-    assert.ok(settlement.roads.every((road) => road.height < 760 && waterCoverage(road.x, road.z) < 0.04))
     assert.ok(settlement.buildings.every((building) => building.height < 700 && waterCoverage(building.x, building.z) < 0.04))
-    assert.ok(settlement.cars.every((car) => waterCoverage(car.x, car.z) < 0.04))
   })
 
   it('spawns deterministic flying traffic clear of terrain', () => {
